@@ -1,0 +1,51 @@
+# systemd unit for the Polymarket Copy Trading Bot
+#
+# Install:
+#   sudo cp deploy/polymarketbot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now polymarketbot
+#
+# The service binds to 127.0.0.1 only. Reach the dashboard with an SSH tunnel
+# (see DEPLOY.md) — never open this port in the firewall: the API can move
+# funds and has no authentication of its own.
+
+[Unit]
+Description=Polymarket Copy Trading Bot
+Documentation=file:/opt/polymarketbot/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polybot
+Group=polybot
+WorkingDirectory=/opt/polymarketbot
+
+# Holds POLYBOT_SECRET_PASSPHRASE. Read by systemd as root before privileges
+# are dropped, so it can stay root-owned 0600 and unreadable to the bot user.
+EnvironmentFile=/etc/polymarketbot.env
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/polymarketbot/.venv/bin/python run.py --no-browser --host 127.0.0.1 --port 8765
+
+Restart=always
+RestartSec=5
+# Do not give up on a wallet that is mid-position because of a flapping network.
+StartLimitIntervalSec=0
+
+# Logs go to journald: journalctl -u polymarketbot -f
+StandardOutput=journal
+StandardError=journal
+
+# --- hardening ---
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+# The database, config, bot.log and secret.enc live under the bot user's home.
+ReadWritePaths=/home/polybot
+
+[Install]
+WantedBy=multi-user.target

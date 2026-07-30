@@ -1,0 +1,27 @@
+# ---------------------------------------------------------------------------
+# Polymarket Copy Trading Bot — local web application
+# Python 3.10+ (tested on Windows 11)
+# ---------------------------------------------------------------------------
+
+# --- Web server ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+websockets>=12.0
+pydantic>=2.6
+
+# --- Async HTTP for Gamma / Data API / CLOB REST ---
+httpx>=0.27
+
+# --- Polymarket trading (official client) ---
+py-clob-client>=0.17
+
+# --- Web3 / signing (pulled by py-clob-client; listed for clarity) ---
+web3>=6.0
+eth-account>=0.10
+
+# --- Secure local credential storage ---
+# keyring covers Windows (Credential Manager) and desktop Linux/macOS.
+# cryptography backs the passphrase-encrypted keyfile used on headless servers,
+# where no keyring daemon is running. (py-clob-client pulls it in anyway.)
+keyring>=24.0
+cryptography>=42.0
