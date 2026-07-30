@@ -11,7 +11,7 @@
 
 [Unit]
 Description=Polymarket Copy Trading Bot
-Documentation=file:/opt/polymarketbot/README.md
+Documentation=file:/opt/ploymarketbot/README.md
 After=network-online.target
 Wants=network-online.target
 
@@ -19,14 +19,14 @@ Wants=network-online.target
 Type=simple
 User=polybot
 Group=polybot
-WorkingDirectory=/opt/polymarketbot
+WorkingDirectory=/opt/ploymarketbot
 
 # Holds POLYBOT_SECRET_PASSPHRASE. Read by systemd as root before privileges
 # are dropped, so it can stay root-owned 0600 and unreadable to the bot user.
 EnvironmentFile=/etc/polymarketbot.env
 Environment=PYTHONUNBUFFERED=1
 
-ExecStart=/opt/polymarketbot/.venv/bin/python run.py --no-browser --host 127.0.0.1 --port 8765
+ExecStart=/opt/ploymarketbot/.venv/bin/python run.py --no-browser --host 127.0.0.1 --port 8765
 
 Restart=always
 RestartSec=5

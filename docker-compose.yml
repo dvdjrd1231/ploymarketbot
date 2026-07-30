@@ -1,0 +1,37 @@
+services:
+  bot:
+    build: .
+    image: polymarketbot:latest
+    container_name: polymarketbot
+    restart: unless-stopped
+
+    # Reads POLYBOT_SECRET_PASSPHRASE. Create it from deploy/docker.env.example
+    # and chmod 600 — it unlocks the wallet key.
+    env_file:
+      - .env
+
+    ports:
+      # Public on port 80. The container listens on 8765; Docker binds 80 on the
+      # host, so no privileged-port capability is needed inside.
+      - "80:8765"
+      #
+      # Localhost-only instead (reach it with: ssh -N -L 8765:127.0.0.1:8765 ...)
+      # - "127.0.0.1:8765:8765"
+
+    volumes:
+      # Database, config.json, bot.log and secret.enc. Losing this volume loses
+      # your trade history and stored key — see the backup note in DEPLOY.md.
+      - botdata:/data
+
+    # The engine is time-sensitive: settlement filters compare against the clock.
+    environment:
+      - TZ=UTC
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  botdata:

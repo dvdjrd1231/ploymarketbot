@@ -1,0 +1,30 @@
+# Keep the build context small and, more importantly, keep host-built artifacts
+# out of the image — a node_modules built on Windows contains native binaries
+# that cannot run in a Linux container.
+.git
+.gitignore
+**/node_modules
+frontend/dist
+**/__pycache__
+**/*.py[cod]
+.venv
+venv
+
+# Never bake secrets or runtime state into an image layer.
+*.env
+.env
+.env.*
+!*.env.example
+secret.bin
+secret.enc
+config.json
+*.sqlite3
+*.log
+
+# Not used inside the container
+Start Bot.bat
+DEPLOY.md
+README.md
+deploy/
+.vscode
+.idea
