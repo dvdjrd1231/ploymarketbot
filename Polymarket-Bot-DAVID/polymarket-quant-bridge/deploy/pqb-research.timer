@@ -1,0 +1,29 @@
+# When strategy discovery runs.
+#
+# Daily, not hourly. Discovery is expensive and its input — the captured
+# feature series — grows by one row per token per minute, so an hourly run
+# would spend minutes of CPU to re-search data that has barely changed.
+#
+# 04:10 UTC is chosen to sit away from the top of the hour (when the backup
+# timer and most cron traffic land) and outside US/EU market-open hours, when
+# Polymarket activity and therefore the trading loop's own work are heaviest.
+#
+#   systemctl enable --now pqb-research.timer
+#   systemctl list-timers pqb-research.timer
+
+[Unit]
+Description=Run Polymarket Quant Bridge strategy discovery daily
+Documentation=file:/opt/polymarket-quant-bridge/docs/VPS-GUIDE.md
+
+[Timer]
+OnCalendar=*-*-* 04:10:00 UTC
+# Spread the load if several hosts ever share a schedule, and so a restart
+# does not stampede.
+RandomizedDelaySec=900
+# A VPS that was asleep or rebooted through the window still gets its run,
+# rather than silently skipping a day of learning.
+Persistent=true
+Unit=pqb-research.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,8 @@
+# Extra packages needed ONLY for the desktop dashboard (python -m pqb.gui).
+#
+# Kept out of requirements.txt on purpose: a headless server runs the trading
+# loop, the CLI and strategy discovery without any of this, and PyQt6 pulls in
+# ~85 MB plus X libraries that a VPS has no use for.
+#
+#   .venv\Scripts\python -m pip install -r requirements-desktop.txt
+PyQt6>=6.5

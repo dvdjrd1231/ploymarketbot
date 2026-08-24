@@ -1,0 +1,24 @@
+# Core numerics
+pandas>=2.0
+numpy>=1.24
+
+# Config
+PyYAML>=6.0
+
+# GUI  (PyQt6 preferred; PyQt5 also supported by the app's Qt compat shim)
+PyQt6>=6.5
+
+# ---------------------------------------------------------------------------
+# OPTIONAL - the platform detects each at runtime and degrades gracefully if
+# absent, so a fresh machine (no IBKR, no Postgres) still runs end-to-end on
+# synthetic/replayed ticks and a local SQLite store. Install what you need:
+# ---------------------------------------------------------------------------
+# ib_insync>=0.9.86        # Interactive Brokers Time & Sales (Module 2). Needs
+#                          # TWS or IB Gateway running with the API enabled.
+# psycopg2-binary>=2.9     # PostgreSQL / TimescaleDB event store (else SQLite).
+# psutil>=5.9              # more precise RAM reporting (else a ctypes fallback).
+#
+# The REST + WebSocket API (Module: control plane) has NO dependency - it is
+# implemented directly on asyncio so the frozen .exe needs no web framework.
+#
+# scipy>=1.10              # not required; statistics are pure-numpy.

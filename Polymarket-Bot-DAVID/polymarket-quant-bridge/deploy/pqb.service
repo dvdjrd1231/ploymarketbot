@@ -1,0 +1,69 @@
+# systemd unit for the Polymarket Quant Bridge.
+#
+# Pattern taken from paymentor-proxy-admin-panel/scripts/install-debian13.sh
+# (dedicated user, Restart=always, journald logging), with hardening added
+# because this process holds a key that moves money.
+#
+#   sudo cp deploy/pqb.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now pqb
+#   journalctl -u pqb -f
+#
+# KEY CUSTODY: PQB_PRIVATE_KEY is read from an EnvironmentFile owned by the
+# service user and chmod 600. It is never in this unit, never in the repo,
+# never in journald. Whoever controls this host controls the wallet — so the
+# wallet owner should own the host, not a developer.
+
+[Unit]
+Description=Polymarket Quant Bridge
+Documentation=file:/opt/polymarket-quant-bridge/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pqb
+Group=pqb
+WorkingDirectory=/opt/polymarket-quant-bridge
+
+# chmod 600, owned by pqb. Holds PQB_PRIVATE_KEY, PQB_FUNDER_ADDRESS, and the
+# locations of the two sibling projects the path shims resolve
+# (PQB_POLYMARKETBOT_PATH, PQB_QUANT_BRIDGE_PATH).
+EnvironmentFile=/etc/pqb/pqb.env
+
+ExecStart=/opt/polymarket-quant-bridge/.venv/bin/python -m pqb.cli \
+          --config /opt/polymarket-quant-bridge/config/config.yaml run
+
+Restart=always
+RestartSec=10
+# Do not fight a genuine crash loop: five failures in five minutes stops it and
+# leaves the state for inspection rather than restarting into the same fault.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# SIGINT is what the runner installs its graceful-shutdown handler for: it
+# finishes the cycle, persists state, and closes the journal cleanly.
+KillSignal=SIGINT
+TimeoutStopSec=60
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pqb
+
+# --- hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+# The only writable paths: runtime state and the journal.
+ReadWritePaths=/opt/polymarket-quant-bridge/state
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

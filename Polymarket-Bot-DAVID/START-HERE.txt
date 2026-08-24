@@ -1,0 +1,77 @@
+===============================================================================
+  POLYMARKET QUANT BRIDGE
+  Trading bot with a desktop dashboard - for Windows
+===============================================================================
+
+  TWO STEPS. That is all.
+
+    1. Double-click   1-INSTALL-FIRST.bat      (once, takes a few minutes)
+    2. Double-click   2-OPEN-DASHBOARD.vbs     (every time you want it)
+
+  Then press "Start bot" in the window that opens.
+
+
+-------------------------------------------------------------------------------
+  BEFORE YOU START
+-------------------------------------------------------------------------------
+
+  You need Python. If you do not have it:
+
+    - Go to  https://www.python.org/downloads/
+    - Click the yellow "Download Python" button
+    - Run the installer and TICK THE BOX that says
+      "Add python.exe to PATH"   (bottom of the first screen)
+
+  Keep these three folders together in one place. The bot needs all
+  three and finds them by sitting next to them:
+
+      polymarket-quant-bridge      the bot
+      ploymarketbot                connects to Polymarket
+      qc_lean_bridge               the Quant Bridge - the brain
+
+
+-------------------------------------------------------------------------------
+  IT CANNOT SPEND YOUR MONEY
+-------------------------------------------------------------------------------
+
+  It starts in SIMULATION, trading with pretend money. The dashboard says
+  so in green at the top left. Real trading needs two settings changed
+  AND a wallet key added - none of which happens by accident, and none of
+  which is in this guide.
+
+  Leave it running for a few hours. It learns from live market data as it
+  happens, and that data cannot be downloaded afterwards. The first hour
+  looks quiet. That is normal.
+
+
+-------------------------------------------------------------------------------
+  WHAT YOU WILL SEE
+-------------------------------------------------------------------------------
+
+  Overview   the headline numbers, how it is doing, and whether anything
+             is wrong - check this first
+  Wallets    traders it found and ranked BY ITSELF from their results
+  Unusual    odd behaviour it spotted, with the numbers behind it
+  Positions  what it is holding right now
+  Closed     finished trades, and what each made or lost
+  Results    which KINDS of trade have actually made money
+  Activity   every decision it has made, newest first
+
+  See the screenshots folder for what it looks like.
+
+
+-------------------------------------------------------------------------------
+  MORE DETAIL
+-------------------------------------------------------------------------------
+
+  Full plain-English guide, including what to do if something looks wrong:
+
+      polymarket-quant-bridge\docs\LOCAL-PC-GUIDE.md
+
+  Running it on a server instead of your PC:
+
+      polymarket-quant-bridge\docs\VPS-GUIDE.md
+
+  (.md files open in Notepad, or any web browser.)
+
+===============================================================================

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+strategies/
+reports/
+sample_data/exports/
+sample_data/ticks.csv
+data/
+logs/
+.venv/
+*.egg-info/
+build/
+dist/
+*.log

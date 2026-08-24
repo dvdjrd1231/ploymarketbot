@@ -1,0 +1,262 @@
+# ============================================================================
+#  Autonomous Non-Print Quantitative Research Platform - Master Configuration
+# ----------------------------------------------------------------------------
+#  ONE file drives the whole platform, upstream and downstream:
+#
+#    ingest -> nonprint -> structure -> database   (the data engine)
+#    dataset -> discovery -> validation -> ranking (the LEAN bridge)
+#    openclaw / live / api                         (autonomy + control plane)
+#
+#  Every stage is independently configurable and independently runnable, so a
+#  module can be improved or replaced without touching the others.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+#  MODULE 2 - Non-Print Data Engine: where the Time & Sales comes from.
+# ----------------------------------------------------------------------------
+ingest:
+  # auto      = IBKR if ib_insync is installed, else captured CSV, else synthetic
+  # ibkr      = Interactive Brokers Time & Sales via ib_insync (TWS/Gateway)
+  # csv       = replay a captured tick file (offline research / reproducibility)
+  # synthetic = generated microstructure (no IBKR needed; used by the self-test)
+  source: "auto"
+  csv_path: "sample_data/ticks.csv"
+  synthetic_ticks: 200000       # only used by the synthetic source
+  seed: 42
+
+  ibkr:
+    enabled: true
+    host: "127.0.0.1"
+    port: 7497                  # 7497 TWS paper, 7496 TWS live, 4002 Gateway paper
+    client_id: 17
+    sec_type: "FUT"             # FUT | STK
+    exchange: "CME"
+    currency: "USD"
+    expiry: ""                  # "" = front month (auto-qualified)
+    lookback_days: 1            # historical Time & Sales window
+    use_rth: true               # regular trading hours only
+    live: false                 # true = stream live ticks instead of history
+
+# ----------------------------------------------------------------------------
+#  MODULE 2 - Bid / Ask Non-Print Structure Engines (two independent engines).
+# ----------------------------------------------------------------------------
+nonprint:
+  print_lookback_s: 300.0       # a level counts as "printed" if traded within this
+  void_max_age_s: 1800.0        # voids older than this are structurally dead
+  prune_distance_ticks: 400     # voids this far from the market are dropped (RAM)
+  velocity_alpha: 0.05          # EMA smoothing for structural velocity
+  accel_alpha: 0.05             # EMA smoothing for structural acceleration
+  event_rate_alpha: 0.02        # EMA smoothing for the non-print event rate
+  max_skips_per_jump: 50        # safety cap on events from one absurd quote jump
+
+# ----------------------------------------------------------------------------
+#  MODULE 3 - Market Structure Engine: 100 independent Line Break engines.
+#  Engine R prints a line when price travels R ticks ("R Line Break / 1 Tick").
+# ----------------------------------------------------------------------------
+structure:
+  min_resolution: 1
+  max_resolution: 100           # -> 100 independent engines, each with own state
+  reversal_lines: 1             # 1 = classic line break; 3 = 3-line break
+  snapshot_resolution: 3        # which engine's lines emit a research row.
+                                # LOWER = denser dataset, HIGHER = fewer, more
+                                # structural rows. Measured on 200k MES ticks:
+                                #   1 -> ~63,700 rows   3 -> ~5,800 rows
+                                #   2 -> ~14,900 rows   10 -> ~450 rows
+                                # 3 balances sample size against structural
+                                # meaning; raise it if discovery overfits noise.
+  store_stride: 5               # persist/export every Nth engine's lines+columns.
+                                # ALL 100 are always computed and always feed the
+                                # consensus features; this only bounds disk/RAM.
+
+# ----------------------------------------------------------------------------
+#  Replayable event database. Every tick, structural event, line and research
+#  row is stored, so any run can be replayed bit-for-bit.
+# ----------------------------------------------------------------------------
+database:
+  backend: "sqlite"             # sqlite | postgres | timescale
+  path: "data/research.db"      # sqlite file (relative to the app folder)
+  host: "localhost"             # postgres / timescale
+  port: 5432
+  database: "research"
+  user: "postgres"
+  password: ""
+  batch_size: 5000              # rows per executemany - the throughput lever
+  store_ticks: true             # false = keep structure only (much smaller DB)
+
+# ----------------------------------------------------------------------------
+#  MODULE 1 - OpenClaw AI (master controller).
+# ----------------------------------------------------------------------------
+openclaw:
+  auto_deploy: true             # deploy strategies that pass EVERY gate
+  retrain_on_degradation: true  # a decayed live strategy triggers new research
+  cycle_interval_hours: 12      # autonomous mode: refresh research this often
+  ingest_max_ticks: 200000      # 0 = unlimited (stream until stopped)
+  min_research_rows: 300        # a cycle with fewer rows is rejected, not traded
+  validate_top_n: 40            # candidates put through the robustness gauntlet
+  export_top_n: 5               # accepted strategies exported as LEAN algorithms
+  reuse_existing_dataset: false # true = skip ingest, research the existing CSVs
+  registry_path: "data/registry.db"
+
+# ----------------------------------------------------------------------------
+#  MODULE 7 - Live Strategy Manager.
+# ----------------------------------------------------------------------------
+live:
+  paper_trading: true           # true = simulated fills (no broker orders sent)
+  max_live_strategies: 1        # prop accounts want ONE clean strategy at a time
+  buffer_rows: 400              # rolling research rows kept for live features
+  eval_interval_s: 1.0          # entry signals re-evaluated at most this often
+                                # (stops/targets are still checked EVERY tick)
+  degradation_threshold: 0.40   # 40% decay vs the validated baseline -> disable
+  min_trades_before_judging: 10 # never retire a strategy on a small sample
+  max_live_drawdown: 1000.0     # $ live drawdown that disables a strategy
+  auto_replace: true            # promote the next validated strategy on disable
+
+# ----------------------------------------------------------------------------
+#  REST + WebSocket control plane. Localhost-only by default.
+# ----------------------------------------------------------------------------
+api:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8765
+  tick_sample: 50               # push every Nth tick to WS clients (0 = firehose)
+
+logging:
+  level: "INFO"
+  dir: "logs"                   # platform.jsonl (structured, rotating)
+
+dataset:
+  # Folder containing the CSV exports from your Non-Print / Line Break engine.
+  # Every *.csv in this folder is loaded and merged on the timestamp column.
+  data_dir: "sample_data/exports"
+
+  # Column in the CSV that holds the bar timestamp.
+  # Line break bars are event-driven (irregular spacing) - that is expected.
+  timestamp_column: "timestamp"
+  timestamp_format: ""            # blank = auto-detect / ISO. e.g. "%Y-%m-%d %H:%M:%S"
+
+  # The traded price used for P&L. For line break data this is the close/level
+  # of the break. If left blank the importer uses the column named "price".
+  price_column: "price"
+
+  # Optional explicit hints so features can build Bid/Ask imbalance etc.
+  # Any column whose name contains these tokens is tagged accordingly.
+  bid_tokens: ["bid"]
+  ask_tokens: ["ask"]
+
+  # Columns to IGNORE (ids, text notes, etc.). Everything else numeric is
+  # treated as a structural metric and fed to feature engineering.
+  ignore_columns: []
+
+  # How to align multiple CSVs / irregular rows onto one research index.
+  # "outer" keeps every event and forward-fills; "inner" keeps only common ts.
+  merge: "outer"
+  fill_method: "ffill"           # ffill | none
+
+instrument:
+  # Futures contract economics used by the backtester and LEAN export.
+  symbol: "MES"                  # e.g. MES micro E-mini S&P 500
+  point_value: 5.0               # $ per 1.0 point per contract (MES = $5)
+  tick_size: 0.25
+  commission_per_contract: 0.62
+
+account:
+  starting_equity: 50000.0
+
+# ----------------------------------------------------------------------------
+#  Prop firm hard constraints (enforced in backtest AND written into LEAN code)
+#  Defaults reflect the latest client clarification (chat 7/2). All are editable
+#  in the GUI so a different prop program can be modeled without code changes.
+# ----------------------------------------------------------------------------
+prop_constraints:
+  min_hold_seconds: 10.0         # every position open >= this before it may close
+  max_hold_seconds: 0.0          # 0 = no max hold cap
+  daily_profit_cap: 1500.0       # stop opening trades once daily P&L >= this
+  daily_profit_target: 3000.0    # program pass target (reporting only)
+  per_trade_max_dd_pct: 10.0     # stop-loss as % of the trade's own risk capital
+  account_max_dd_pct: 1.5        # halt ALL trading if account equity DD breaches
+  eod_max_drawdown: 2000.0       # end-of-day trailing DD in $ (0 = disabled)
+  max_position_contracts: 5
+  micro_scaling: 10              # 10:1 micro scaling (reporting/LEAN note)
+  min_win_rate: 0.50             # 50% consistency rule - reject strategies below
+
+# ----------------------------------------------------------------------------
+#  Automated strategy discovery search space
+# ----------------------------------------------------------------------------
+discovery:
+  method: "random"               # "random" (sampled), "grid" (exhaustive), or "genetic"
+  max_candidates: 400            # cap on strategies backtested (random/grid budget)
+  random_seed: 7
+  filter_probability: 0.4        # chance a random/mutated genome gets a confirm filter
+  # Evolutionary optimizer settings (used when method: genetic)
+  genetic:
+    population_size: 40
+    generations: 12
+    mutation_rate: 0.2
+    crossover_rate: 0.7
+    elite: 4                     # top genomes carried unchanged to next generation
+    tournament_k: 3
+  directions: ["long", "short"]
+  entry_operators: [">", "<"]
+  # thresholds are expressed as z-score / percentile bands of each feature so
+  # they are comparable across features of different scale.
+  entry_quantiles: [0.55, 0.6, 0.7, 0.8, 0.9]
+  # Stops/targets are a % of the ENTRY PRICE. Intraday futures move FRACTIONS of
+  # a percent: on MES at 5000, 0.10% = 5 points = 20 ticks = $25/contract. The
+  # old 1-10% values equal 50-500 points, which tick-resolution data never
+  # travels - positions opened and could never close, so nothing ever traded.
+  stop_pct_choices: [0.05, 0.10, 0.20, 0.30, 0.50]
+  target_pct_choices: [0.05, 0.10, 0.20, 0.40, 0.60]
+  time_exit_bars_choices: [0, 10, 25, 50, 100]      # 0 = disabled (in research rows)
+  position_contracts_choices: [1, 2, 3, 5]
+  max_features_scanned: 40       # feature-selection cap to tame explosion
+  # Floors a feature must clear before it may carry a rule at all. Thresholds
+  # come from each feature's own quantiles, so a column that never really
+  # moves still yields one - a run of exact zeros with float dust on top
+  # produces rules like `np_ask_quote_vel > 3.8e-10`, which is a statement
+  # about rounding rather than about the market. Set any to 0 to disable.
+  # The effect floor does the real work; the other two only rule out columns
+  # that cannot be thresholded at all. Flat-share is deliberately loose - a
+  # rare-event column that fires on 1% of bars is worth trading, not dust.
+  min_feature_effect: 0.02       # |corr| with the forward move, absolute floor
+  # The floor that actually binds: sigmas of the null standard error
+  # (1/sqrt(m)) at the number of rows the feature is informative on. A column
+  # flat for 96% of the series is speaking about 40 rows, and 2/sqrt(40)=0.32
+  # is the bar it has to clear - not 2/sqrt(1000)=0.06.
+  feature_effect_sigma: 2.0
+  max_feature_flat_share: 0.995  # no single value may own more of the rows
+  min_feature_distinct: 2        # distinct values, at the feature's own scale
+
+# ----------------------------------------------------------------------------
+#  Validation thresholds - a strategy must pass ALL to be "accepted"
+# ----------------------------------------------------------------------------
+validation:
+  in_sample_fraction: 0.70
+  walk_forward_windows: 4
+  monte_carlo_runs: 500
+  robustness_perturb_pct: 10.0   # +/- threshold perturbation for stability test
+  min_trades: 30
+  min_sharpe: 1.0
+  min_win_rate: 0.50
+  max_drawdown_pct: 25.0         # of starting equity
+  max_oos_degradation: 0.50      # OOS Sharpe must be >= (1-this) * IS Sharpe
+  monte_carlo_min_profitable: 0.75   # >=75% of MC paths must end profitable
+
+# ----------------------------------------------------------------------------
+#  Ranking - weighted composite. Higher weight = more influence. Metrics where
+#  lower is better (drawdown, ulcer) are inverted internally.
+# ----------------------------------------------------------------------------
+ranking:
+  weights:
+    sharpe: 3.0
+    sortino: 2.5
+    profit_factor: 2.0
+    win_rate: 1.5
+    max_drawdown: 2.0
+    oos_performance: 2.5
+    walk_forward: 2.0
+    parameter_stability: 1.5
+    recovery_factor: 1.0
+
+output:
+  strategies_dir: "strategies"
+  reports_dir: "reports"

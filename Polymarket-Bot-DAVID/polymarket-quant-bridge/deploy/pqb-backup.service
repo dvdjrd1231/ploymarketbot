@@ -1,0 +1,36 @@
+# Nightly backup of the journal, the intel store and the config.
+#
+# The journal is not just history: it holds the doubling-rule baseline and
+# progression index and every open-position lifecycle. Losing it rewinds the
+# minimum trade size to 0.19 and turns every open position into an "unknown
+# position" that halts trading at the next reconciliation.
+#
+# The intel store is the other irreplaceable one: the captured feature series
+# cannot be backfilled. An order book that existed for four seconds last
+# Tuesday is gone, so a lost intel database costs however many days of capture
+# it contained — which is the input strategy discovery runs on.
+#
+#   systemctl start pqb-backup      # run one now
+#   ls -la /var/backups/pqb
+
+[Unit]
+Description=Polymarket Quant Bridge — backup
+Documentation=file:/opt/polymarket-quant-bridge/docs/VPS-GUIDE.md
+
+[Service]
+Type=oneshot
+# Runs as root: it writes to /var/backups and uses sqlite3 .backup, which needs
+# to read databases the service user owns.
+User=root
+WorkingDirectory=/opt/polymarket-quant-bridge
+Environment=APP_DIR=/opt/polymarket-quant-bridge
+Environment=BACKUP_DIR=/var/backups/pqb
+Environment=KEEP_DAYS=14
+ExecStart=/bin/bash /opt/polymarket-quant-bridge/scripts/backup.sh
+
+Nice=15
+IOSchedulingClass=idle
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pqb-backup

@@ -1,0 +1,52 @@
+========================================================================
+ QC LEAN Bridge - How to run
+========================================================================
+
+ABOUT THE STANDALONE .EXE
+-------------------------
+The .exe (dist\QC-LEAN-Bridge.exe) is now a SINGLE self-contained file - copy
+just that one file anywhere and double-click it. (An earlier version was a
+folder; if you copied only the .exe out of it you'd get a "python DLL not found"
+error. That is fixed - it is one file now.)
+
+NOTE: Windows 11 "Smart App Control" may still block the .exe because it is not
+signed with a paid code-signing certificate, and SAC offers no "run anyway"
+button. If that happens, use the launcher below instead - it runs the app
+through Python, which Windows trusts because it is signed by the Python
+Software Foundation.
+
+------------------------------------------------------------------------
+ EASIEST WAY  (recommended)
+------------------------------------------------------------------------
+1. Make sure Python 3.10+ is installed.
+   - You likely already have it (your research engine is Python).
+   - If not: https://www.python.org/downloads/  (tick "Add python.exe to PATH")
+
+2. Double-click:   Run QC LEAN Bridge.bat
+
+   The first launch installs the required packages (needs internet, one time),
+   then opens the app. Later launches start immediately.
+
+------------------------------------------------------------------------
+ MANUAL WAY  (a Command Prompt / PowerShell in this folder)
+------------------------------------------------------------------------
+   py -m pip install -r requirements.txt      (first time only)
+   py app.py
+
+------------------------------------------------------------------------
+ USING YOUR OWN DATA
+------------------------------------------------------------------------
+- Put your engine's CSV exports in a folder, then in the app click
+  "Browse export folder..." and "Save configuration".
+- Or drop them into  sample_data\exports\  (replacing the sample files).
+- Click "Run Full Pipeline". Results appear in the Results tab; generated
+  QuantConnect code lands in the  strategies\  folder.
+
+------------------------------------------------------------------------
+ IF YOU LATER WANT THE DOUBLE-CLICK .EXE INSTEAD
+------------------------------------------------------------------------
+The .exe can be made to pass Smart App Control, but only by signing it with a
+purchased code-signing certificate (an "EV" certificate gets trusted fastest).
+Provide a certificate and the .exe can be signed so it runs with no warning.
+Until then, use the launcher above - it is the same app.
+========================================================================

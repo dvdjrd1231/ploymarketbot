@@ -1,0 +1,105 @@
+# Polymarket Quant Bridge — container stack.
+#
+#   bash deploy/docker/build.sh     # build the image (stages the 3 repos)
+#   docker compose up -d            # start the trading loop
+#   docker compose logs -f
+#
+# One-shot commands run in the SAME image against the SAME state:
+#
+#   docker compose run --rm cli check
+#   docker compose run --rm cli wallets
+#   docker compose run --rm cli anomalies
+#   docker compose run --rm cli status
+#   docker compose run --rm research
+#   docker compose run --rm backup
+#
+# `state/` is a host bind mount rather than a named volume on purpose: the
+# journal and the intel store are the two things worth backing up, and a path
+# you can see, copy and restore is far harder to lose than a named volume
+# somebody prunes by accident.
+
+x-common: &common
+  image: ${PQB_IMAGE:-pqb:latest}
+  env_file:
+    - .env
+  volumes:
+    # Read-only: the container must never rewrite the operator's config.
+    - ./config:/app/config:ro
+    - ./state:/app/state
+  environment:
+    TZ: UTC
+  # The clock is the host's. A drifting host clock silently mis-ages every
+  # quote and wallet observation, so keep the HOST NTP-synced.
+  stop_grace_period: 60s
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+services:
+  # ---------------------------------------------------------------- the loop
+  pqb:
+    <<: *common
+    container_name: pqb
+    command: ["run"]
+    restart: unless-stopped
+    # SIGINT is what the runner installs its graceful-shutdown handler for: it
+    # finishes the cycle, persists state and closes the journal cleanly. The
+    # Docker default of SIGTERM would be a hard stop mid-cycle.
+    stop_signal: SIGINT
+    healthcheck:
+      test: ["CMD-SHELL", "bash /app/scripts/healthcheck.sh --quiet; [ $$? -lt 2 ]"]
+      interval: 60s
+      timeout: 20s
+      start_period: 180s
+      retries: 3
+    # `mem_limit` rather than `deploy.resources`: the latter is honoured only by
+    # some Compose versions and is silently ignored by the rest, which is the
+    # worst outcome for a limit. The loop sits around 250-400 MB; this is a
+    # ceiling, not a target.
+    mem_limit: 1g
+
+  # ------------------------------------------------- one-shot CLI (any verb)
+  cli:
+    <<: *common
+    profiles: ["cli"]
+    restart: "no"
+    # Overridden on the command line: `docker compose run --rm cli wallets`
+    command: ["check"]
+
+  # ------------------------------------------------------ strategy discovery
+  # Run on demand, or from a host cron entry (see docs/VPS-GUIDE.md). NOT a
+  # second daemon: two processes writing the same SQLite files concurrently is
+  # exactly what the single-writer discipline exists to avoid. This one only
+  # reads the journal and writes its own outputs.
+  research:
+    <<: *common
+    profiles: ["research"]
+    container_name: pqb-research
+    command: ["research"]
+    restart: "no"
+    # Feature engineering over a token series is the largest allocation this
+    # project makes. Capped so a pathological run is killed rather than pushing
+    # the box into swap and stalling the trading loop, which shares the machine.
+    mem_limit: 1500m
+
+  # ------------------------------------------------------------------ backup
+  backup:
+    <<: *common
+    profiles: ["backup"]
+    container_name: pqb-backup
+    entrypoint: ["/bin/bash", "/app/scripts/backup.sh"]
+    command: []
+    restart: "no"
+    environment:
+      TZ: UTC
+      APP_DIR: /app
+      BACKUP_DIR: /backups
+      KEEP_DAYS: "14"
+    volumes:
+      - ./config:/app/config:ro
+      - ./state:/app/state
+      # Backups land on the host so they can be copied off it. A backup that
+      # only exists inside the thing it is backing up is not a backup.
+      - ./backups:/backups

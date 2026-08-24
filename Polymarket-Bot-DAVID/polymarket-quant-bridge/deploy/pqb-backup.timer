@@ -1,0 +1,20 @@
+# Nightly, at 03:30 UTC — before the research run at 04:10, so the day's
+# captured series is safely copied before anything reads it heavily.
+#
+#   systemctl enable --now pqb-backup.timer
+#
+# A backup that has never been restored is a guess. Test one:
+#   APP_DIR=/tmp/pqb-restore-test bash scripts/restore.sh <archive.tar.gz>
+
+[Unit]
+Description=Nightly backup of the Polymarket Quant Bridge state
+Documentation=file:/opt/polymarket-quant-bridge/docs/VPS-GUIDE.md
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+RandomizedDelaySec=600
+Persistent=true
+Unit=pqb-backup.service
+
+[Install]
+WantedBy=timers.target

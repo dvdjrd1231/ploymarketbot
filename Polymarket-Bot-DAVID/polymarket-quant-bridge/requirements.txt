@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------
+# Polymarket Quant Bridge — Python 3.10+
+#
+# The Polymarket clients themselves are NOT listed here: they are reused from
+# the sibling ploymarketbot project (see pqb/upstream.py). Install that
+# project's requirements.txt as well, or simply reuse its virtualenv, which
+# already contains everything below except PyYAML.
+# ---------------------------------------------------------------------------
+
+# Async HTTP for Gamma / Data API / CLOB REST
+httpx>=0.27
+
+# CLOB market + user WebSocket channels
+websockets>=12.0
+
+# Config files
+PyYAML>=6.0
+
+# Authenticated trading (only needed for live mode; dry-run runs without it)
+py-clob-client>=0.17
+
+# ---------------------------------------------------------------------------
+# The Quant Bridge (qc_lean_bridge) is the decision layer and is reached the
+# same way — a path shim, see pqb/quant.py. These two are its only runtime
+# dependencies on the paths this project uses:
+#
+#   * strategy discovery / validation / ranking  (pqb.cli research)
+#   * live feature engineering                   (bridge/live_features.py)
+#
+# Deliberately NOT installed: PyQt6. It is in the bridge's own requirements for
+# its desktop GUI, costs ~85 MB, and needs X libraries a headless VPS does not
+# have. Nothing on the paths above imports it.
+# ---------------------------------------------------------------------------
+pandas>=2.0
+numpy>=1.24
+
+# Tests (no pytest-asyncio: the few async paths are driven with asyncio.run)
+pytest>=8.0

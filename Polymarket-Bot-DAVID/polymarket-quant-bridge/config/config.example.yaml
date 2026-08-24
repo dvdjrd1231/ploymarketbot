@@ -1,0 +1,593 @@
+# ---------------------------------------------------------------------------
+# Polymarket Quant Bridge — configuration
+#
+# Copy to config/config.yaml and edit. Values written as ${env:NAME} are read
+# from the environment or from a .env file in the project root; no credential
+# is ever stored in this file, and none is ever logged.
+#
+#   cp config/config.example.yaml config/config.yaml
+#   cp config/.env.example .env       # then fill it in and chmod 600
+#   python -m pqb.cli check
+# ---------------------------------------------------------------------------
+
+# --- exchange endpoints and credentials -------------------------------------
+polymarket:
+  clob_host: "https://clob.polymarket.com"
+  gamma_host: "https://gamma-api.polymarket.com"
+  data_api_host: "https://data-api.polymarket.com"
+  clob_ws_host: "wss://ws-subscriptions-clob.polymarket.com/ws"
+  chain_id: 137                       # Polygon mainnet
+
+  # 0 = EOA (MetaMask / Trust Wallet / raw key)
+  # 1 = Polymarket email (Magic) wallet   -> funder_address required
+  # 2 = Polymarket browser proxy wallet   -> funder_address required
+  signature_type: 0
+  funder_address: "${env:PQB_FUNDER_ADDRESS:}"
+
+  # L1 key. The L2 API key/secret/passphrase are derived from it at connect
+  # time by py-clob-client; there is nothing else to configure.
+  private_key: "${env:PQB_PRIVATE_KEY:}"
+
+  polygon_rpc_url: "${env:PQB_POLYGON_RPC_URL:}"  # on-chain CTF reads; empty = off
+  use_price_stream: true              # WebSocket books; REST is the fallback
+  rest_price_fallback_seconds: 4
+
+# --- safety -----------------------------------------------------------------
+# Both flags must be set before a real order can be sent: dry_run: false is not
+# enough on its own. Ships safe.
+mode:
+  dry_run: true
+  allow_live: false
+  kill_switch_file: "state/KILL"
+  stop_file: "state/STOP"
+  paper_starting_balance: 100.0       # simulated bankroll for dry-run
+  reset_paper_on_start: false
+
+# --- what to trade ----------------------------------------------------------
+markets:
+  # Explicit condition ids are always tracked, filters or not.
+  track: []
+  # Markets a tracked wallet trades are pulled into the universe automatically.
+  follow_wallet_markets: true
+  filters:
+    categories: []                    # [] = any; e.g. ["Politics", "Sports"]
+    min_liquidity: 5000
+    min_volume_24h: 0
+    max_markets: 25
+    min_seconds_to_resolution: 3600   # never enter something already settling
+    max_days_to_resolution: 30
+
+# --- pinned wallets: a seed, never a restriction -----------------------------
+# Ingestion observes EVERY wallet that trades, whether or not it is listed here.
+# Listing one only labels it and gives it an influence floor while its own
+# record is still thin. Ranking is derived from measured performance, so a
+# pinned wallet with a poor record ranks poorly and an unlisted one with a
+# strong record can outrank it. Leaving this empty is a perfectly normal setup.
+wallets: []
+#  - address: "0x0000000000000000000000000000000000000000"
+#    label: "alpha"
+#    weight: 1.0
+
+# --- the analytical layer ----------------------------------------------------
+# Broad ingestion -> normalisation -> features -> ranking / anomaly detection.
+intel:
+  enabled: true
+  db: "state/intel.sqlite3"
+
+  # Coverage. The per-market sweep is deep but only sees tracked markets; the
+  # global sweep is shallow but sees the whole exchange, which is how a wallet
+  # moving early into a market nobody is watching becomes visible at all.
+  trades_per_market: 100
+  global_sweep: true
+  global_sweep_limit: 500
+  max_trades_per_cycle: 5000
+
+  lookback_days: 30          # history features and ranking are computed over
+  retention_days: 90         # raw trades kept; hourly rollups outlive this
+  refresh_seconds: 300       # cadence of the profile-and-rank rebuild
+
+  # Size of the top-ranked analytical cohort. A LABEL on a wallet, not a filter
+  # on the feed — every observed wallet still reaches the engine with its full
+  # profile, which is what lets a signal from outside the cohort be discovered.
+  cohort_size: 25
+
+  anomalies:
+    enabled: true
+    recent_seconds: 3600     # what counts as "now"
+    lookback_days: 30        # what counts as "history"
+    # A normally quiet wallet suddenly betting big, in sigmas above its OWN
+    # median — unusual for that wallet, not unusual in absolute terms.
+    size_z: 3.0
+    size_min_usdc: 25
+    # A wallet repeatedly entering before better-ranked ones.
+    lead_min_events: 3
+    lead_window_seconds: 86400
+    lead_min_seconds: 60
+    # Several distinct wallets converging on one outcome, quickly.
+    convergence_min_wallets: 4
+    convergence_window_seconds: 1800
+    convergence_min_usdc: 250
+    # A wallet behaving unlike its own history (size, cadence, or where it looks).
+    drift_z: 2.5
+    drift_min_history: 20
+    # A market taking unusual capital against its own hourly baseline.
+    flow_z: 3.0
+    flow_min_usdc: 1000
+    # wallet x category x timing combinations with a proven settled record.
+    combo_min_samples: 8
+    combo_min_return: 0.08
+    combo_min_t: 2.0
+    max_per_cycle: 60
+
+# --- research: capture now, discover later -----------------------------------
+# The feature series is captured live and CANNOT be backfilled — an order book
+# that existed for four seconds last week is gone. Capture starts on run 1;
+# discovery is run later, once there is enough of it.
+research:
+  enabled: true
+  capture_seconds: 60        # one feature row per tracked token, this often
+  min_rows: 200              # rows a token needs before it is worth researching
+  max_tokens: 48             # token series researched per run (wide: cross-market)
+  min_tokens: 2              # tokens a rule must survive on to be kept
+
+  # The non-print engine between the feed and the bridge (the operator's core
+  # architecture): its structural snapshot rides on every captured row, so
+  # discovery searches structure, not just raw columns. Time constants are
+  # Polymarket-scale; the engine itself is qc_lean_bridge's, unmodified.
+  nonprint_enabled: true
+  nonprint_print_lookback_s: 900
+  nonprint_void_max_age_s: 3600
+
+  # Only the stretch of a market where the outcome was still in doubt is
+  # studied. Outside this price band the price only converges on 0 or 1 -
+  # settlement arithmetic, not an edge. Series are trimmed to the band before
+  # discovery sees them, and backfill collects from inside it.
+  uncertain_min_price: 0.10
+  uncertain_max_price: 0.90
+  # Spread charged on series that cannot report their own (historical tapes
+  # have no order book). Charging zero is how artifact rules appear.
+  assumed_spread: 0.010
+  # Backfill volume bounds: the API cannot page past 10,000 trades, so the
+  # biggest markets only expose their already-decided tail. 0 disables.
+  backfill_max_volume: 25000000
+  backfill_min_volume: 50000
+
+  # A fresh install builds its own historical dataset: when fewer settled
+  # markets than the floor are known, a background backfill runs at start and
+  # the hourly discovery takes it from there. No manual command needed.
+  auto_backfill: true
+  auto_backfill_min_resolutions: 100
+  auto_backfill_markets: 300
+  auto_backfill_trades: 1200
+  # The dataset also self-heals on an upgraded install: when a discovery pass
+  # finds fewer studiable series than the floor (legacy settled-tail tapes are
+  # dropped by the uncertainty band), a re-collection sweep runs automatically,
+  # at most once per cooldown.
+  auto_backfill_min_series: 8
+  auto_backfill_cooldown_seconds: 21600
+
+  # Sequential / event-chain discovery: a SECOND research question, never a
+  # replacement - does the order and timing of events predict what single
+  # events do not? Chains walk the same library and frozen-OOS ladder; they
+  # cannot vote in the live engine until an execution path is deliberately
+  # enabled after forward validation.
+  seq_enabled: true
+  seq_max_len: 4              # 2..4 events, never longer
+  seq_gap_bars: 15            # max bars between consecutive events
+  seq_hold_bars: 15           # measurement window after the chain completes
+  seq_min_occurrences: 8      # floor multiplies with every extra link
+  seq_register_top: 6         # chains registered per pass, at most
+
+  # Sharp-move / crash-recovery research: dislocation as a hypothesis.
+  # Detection adapts to each series' own return distribution (no imported
+  # 15%-crash thresholds); response is measured against the pre-move
+  # anchor; a candidate must beat costs AND the no-event drift control.
+  # Same library, same frozen-OOS ladder, same execution bar as chains.
+  sharp_enabled: true
+  sharp_hold_bars: 15
+  sharp_min_events: 12
+  sharp_register_top: 4
+
+  # Military-attack longshot calibration: the reported "35% / $2,500 -> 52%"
+  # result re-derived from settled tapes with entry-time info only, vs
+  # same-priced non-military controls, clustered by geopolitical event.
+  longshot_enabled: true
+  longshot_min_events: 12
+  longshot_register_top: 2
+
+  # Wallet behavioral states (the RN1 model): a tracked wallet's buy is not
+  # always a prediction. Candidate signal = high first entry (60-79c band
+  # and neighbors) + checkpoint-frozen one-sided commitment (quiet at 3m,
+  # persistent through 30m). Every cell must beat blindly copying the
+  # wallet. Add explicit addresses (e.g. RN1) to wallet_state_targets.
+  wallet_state_enabled: true
+  wallet_state_targets: []
+  wallet_state_min_markets: 12
+  wallet_state_register_top: 2
+  wallet_state_max_premium: 0.03
+
+  # Wallet behavioral DISCOVERY: what repeating behavior explains a ranked
+  # wallet's results? Reconstructs ranked+pinned wallets' settled trades,
+  # extracts the repeating pattern (price band, preceding move, holding
+  # class, and conditional SIDE SWITCHES - what precedes a wallet changing
+  # sides) as an explicit wallet-free rule, and replays it on markets the
+  # source wallet never traded. Source markets are permanently excluded
+  # from the rule's own evidence; the wallet is never the proof. Research
+  # only - wallet-pattern rules cannot vote in the live engine.
+  wallet_behavior_enabled: true
+  wallet_behavior_min_trades: 10
+  wallet_behavior_min_markets: 4
+  wallet_behavior_min_repeat: 3
+  wallet_behavior_min_wallet_trades: 8
+  wallet_behavior_max_wallets: 12
+  wallet_behavior_register_top: 3
+
+  # TRUE out-of-sample validation: the newest markets are held out untouched;
+  # candidates are FROZEN and replayed against them with real costs. Only what
+  # survives with enough independent evidence is VALIDATED and may trade.
+  oos_fraction: 0.3
+  oos_min_trades: 30
+  oos_min_markets: 3
+  oos_min_expectancy: 0.0
+  oos_hc_trades: 100
+  oos_hc_markets: 5
+  # One market may carry at most this share of a strategy's positive OOS
+  # P&L before promotion is blocked - one market's story is not an edge.
+  oos_max_concentration: 0.7
+  # New registrations per strategy FAMILY per pass; a family that unseen
+  # data keeps refusing shrinks to one slot (adaptive search).
+  family_register_cap: 2
+  # OOS allocation budget: frozen replays per pass across all candidates
+  # and pool markets. Priority decides who spends it.
+  oos_eval_budget: 1500
+  # ADAPTIVE ALLOCATION. Candidates given a slate each pass, the per-family
+  # cap on that slate, and the share of it RESERVED for candidates that have
+  # never been evaluated and for near misses.
+  #
+  # The reserves exist because research priority is computed from evidence a
+  # candidate already holds: with no floor, a candidate with none can never
+  # earn any. The audit found 153 of 231 candidates in exactly that state.
+  # They are floors on attention, not holds on compute - an unfilled reserve
+  # flows straight to exploitation.
+  oos_candidates_per_pass: 40
+  oos_family_slots: 6
+  oos_explore_fraction: 0.40
+  oos_near_miss_fraction: 0.15
+  # The multi-source HYPOTHESIS LAYER: convergence, inversion, failure-state
+  # discovery and staged synthesis. Additive and advisory - it proposes,
+  # ranks and connects. It cannot promote, validate or trade; anything it
+  # produces queues for the same OOS markets as everything else.
+  hypothesis_layer_enabled: true
+  # The persistent OOS pool: settled series are built ONCE, cached, and
+  # reused forever as validation evidence - breadth is limited by the
+  # dataset, not the per-pass export cap. Fills incrementally.
+  oos_pool_enabled: true
+  oos_pool_build_per_pass: 150
+  oos_pool_max_series: 400
+  # Pool eligibility floor, separate from the discovery floor: replaying a
+  # frozen rule on an unseen market is meaningful on far fewer rows than a
+  # search needs. Widens evidence supply; validation thresholds unchanged.
+  oos_pool_min_rows: 80
+  # Bidirectional / hold discovery: direction and holding period as
+  # evidence-driven variables. A decisively losing candidate spawns its
+  # inverse-side variant; a promising one spawns half/double hold variants
+  # - each a fresh candidate with zero inherited validation.
+  variants_enabled: true
+  variants_per_pass: 6
+  # Rows shown on the board (strategies.json). Display bound only - the
+  # library database is unbounded and keeps every record forever.
+  library_view_cap: 2000
+
+# --- the market-state layer: EVENTS -> STATE -> LEAN -------------------------
+# Classifies every market DORMANT -> DEVELOPING -> IMPULSE -> CONTINUATION ->
+# EXHAUSTION -> REVERSAL and scores impulse/exhaustion/anomaly 0-100 from
+# rolling windows. Thresholds live here so they can be optimised from data.
+market_state:
+  enabled: true
+  dormant_max_trades: 2
+  developing_activity_x: 1.5
+  impulse_score_min: 55
+  continuation_score_min: 45
+  exhaustion_score_min: 55
+  reversal_fraction: 0.4
+  min_move_pct: 0.02
+
+# --- the brain --------------------------------------------------------------
+engine:
+  cycle_seconds: 2                    # fast loop, per the operator
+
+  # THE BRAIN. The Quant Bridge (qc_lean_bridge) is the decision layer: it
+  # DISCOVERS strategies from captured Polymarket features and those discovered
+  # rules vote on every candidate, weighted by rank and by how many independent
+  # token series they survived. No strategy is hard-coded here — the engine
+  # finds its own. Falls back to a plain market-quality score only until
+  # `pqb.cli research` has produced rules from enough captured history.
+  implementation: "pqb.bridge.lean_engine:LeanDecisionEngine"
+  # Alternatives (NOT the brain — they impose a fixed method rather than
+  # discovering one; kept for comparison only):
+  #   pqb.bridge.ev_engine:EVDecisionEngine               EV gate
+  #   pqb.bridge.baseline_engine:BaselineDecisionEngine   simple scoring
+
+  # The high-confidence trade filter: the last gate before capital moves.
+  # Every threshold configurable; empirical gates strict in LIVE, provisional
+  # in paper until setups accumulate history (else nothing could ever learn).
+  filter:
+    enabled: true
+    min_setup_sample: 12
+    min_empirical_win: 0.62
+    validation_fraction: 0.3
+    max_validation_drop: 0.15
+    min_expected_value: 0.02
+    max_exhaustion: 55
+    require_state: true
+    min_depth_x_stake: 3.0
+    max_spread: 0.08
+    contradiction_tolerance: 2
+    max_category_share: 0.5
+
+  entry:
+    enabled: true
+    # Learning mode: no entries until discovery has produced a validated
+    # strategy. Exits, capture and discovery keep running; the simulated
+    # account cannot be spent by the fallback scorer while Discovery is empty.
+    require_strategies: true
+    min_score: 0.55                   # 0-1 blended score required to buy
+    min_price: 0.05                   # stay out of the tails
+    max_price: 0.95
+    max_spread: 0.06
+    wallet_signal_weight: 0.6         # 0 = ignore wallets, 1 = wallets only
+    require_wallet_signal: false
+    signal_ttl_seconds: 1800          # older wallet activity stops counting
+
+    # --- the expected-value gate (EVDecisionEngine) -------------------------
+    # EV per dollar = (our probability - the ask) / the ask, minus slippage
+    # and fees. Below this, the estimate's own error is bigger than the edge.
+    # Raise it to trade less and better; lower it to trade more.
+    min_expected_value: 0.02
+    # Evidence required before acting at all. A wallet with a handful of
+    # trades cannot clear this, deliberately.
+    min_confidence: 0.15
+    slippage: 0.01                    # assumed adverse move when taking
+
+  # Exit management is the highest-priority capability: every open position is
+  # adjudicated every cycle against these thresholds.
+  exits:
+    take_profit_pct: 0.35             # +35% on cost -> full exit
+    reduce_at_pct: 0.20               # +20% -> take part off (once)
+    reduce_fraction: 0.5
+    stop_loss_pct: 0.25               # -25% -> exit
+    trailing_drawdown_pct: 0.15       # give back 15% of the peak -> exit
+    trailing_arm_pct: 0.15            # ...only after 15% in profit
+    near_resolution_seconds: 3600
+    near_resolution_action: "hold"    # "hold" | "exit"
+    # Exit once holding is worse than this per dollar. Laxer than the entry
+    # bar on purpose: getting out costs a spread and a fee, so a position is
+    # not churned in and out around zero.
+    exit_expected_value: -0.03
+    follow_wallet_exit: true
+    # Above this conviction the engine overrides a tracked wallet's exit and
+    # keeps holding. The override and its reasoning are journalled.
+    wallet_exit_override_score: 0.65
+    max_hold_seconds: 0               # 0 = no time cap
+
+    # The stagnation exit (toggle; also on the dashboard's Settings page).
+    # Prunes a position showing no momentum within a window scaled to its
+    # market's horizon, so dead capital rotates into live setups:
+    #   resolves within the hour  -> stagnation_fast_seconds      (3-5 min band)
+    #   resolves within the day   -> stagnation_intraday_seconds  (15-30 min band)
+    #   longer or unknown         -> stagnation_long_seconds      (1-2 h band)
+    stagnation_enabled: false
+    stagnation_fast_seconds: 240
+    stagnation_intraday_seconds: 1500
+    stagnation_long_seconds: 5400
+    stagnation_min_move_pct: 0.02     # under this return counts as "not moving"
+
+    # The PRIMARY exit (master spec): leave when the measured edge dies -
+    # conviction below this floor - before any fixed target. Stop/take-profit
+    # above are backstops. 0 disables; grace stops cold-start churn.
+    edge_exit_floor: 0.30
+    edge_exit_grace_seconds: 180
+
+  portfolio:
+    max_open_positions: 0             # 0 = no limit; the Quant Bridge decides
+    max_position_fraction: 0.25       # per position, of portfolio value
+    # Cost of one fill, in USDC. Charged BOTH ways, so a round trip costs
+    # twice this. At the first progression step ($0.19) a 1c fee is ~10.5%
+    # round trip, which is why max_fee_fraction exists below.
+    fee_per_trade_usdc: 0.01
+    # Fee fund: set aside for fees only; auto-refills when it hits 10%.
+    fee_fund_usdc: 2.0
+    # Performance-deviation throttle: entries shrink by throttle_factor when
+    # rolling realised return over >= min_sample closed trades goes this
+    # negative (factor^2 at twice the deviation). Never scales up on streaks.
+    throttle_min_sample: 20
+    throttle_at_return: -0.05
+    throttle_factor: 0.5
+    # Refuse an entry whose round-trip fee exceeds this share of the stake.
+    # Raise min_order_usdc if you would rather trade bigger than skip.
+    max_fee_fraction: 0.05
+
+    min_order_usdc: 0.16
+    # How much better a new opportunity must be before an existing position
+    # is sold to fund it. A swap pays spread and fees both ways.
+    replace_margin: 0.05
+    max_drawdown_pct: 0.0             # 0 = off; the decision engine manages risk
+    reserve_cash_fraction: 0.05       # cash buffer never spent; 0 = off
+
+# --- portfolio-doubling rule ------------------------------------------------
+# At 2x the active baseline: close everything, advance the minimum trade size to
+# the next step, re-base, resume. Baseline and index are persisted, so a restart
+# resumes mid-progression rather than starting over.
+doubling:
+  enabled: true
+  multiple: 2.0
+  progression:
+    [0.19, 0.29, 0.41, 0.47, 0.59, 0.67, 0.73, 0.83, 0.97, 1.03,
+     1.09, 1.27, 1.37, 1.49, 1.57, 1.67, 1.79, 1.91, 1.97, 2.11,
+     2.27, 2.39, 2.51, 2.63, 2.71, 2.81, 2.93, 3.11, 3.17, 3.37,
+     3.49, 3.59, 3.73, 3.83, 3.97, 4.09, 4.21, 4.33, 4.43, 4.57,
+     4.67, 4.87, 5.03, 5.21, 5.41, 5.57, 5.69, 5.77, 5.93, 6.07]
+
+# --- keeping the bridge honest ----------------------------------------------
+# The live Polymarket account is the source of truth. Reconcile before every
+# decision; on a critical mismatch, HALT and alert rather than trade on state
+# we have not just verified. A halt never flattens — closing out is still
+# trading, and a halt means we do not know what we hold.
+reconciliation:
+  on_startup: true                    # reconcile before the first decision
+  every_loop: true                    # ...and before every decision after that
+  interval_seconds: 300               # only used when every_loop is false
+  halt_on_mismatch: true
+  halt_file: "state/HALT"
+  size_tolerance: 0.01
+  balance_tolerance: 0.01
+  # A fill reaches the CLOB before the Data API reports the position. Without
+  # this window, every entry would trip the halt seconds after it filled.
+  settle_grace_seconds: 120
+
+# Hard pre-trade risk limits. All dollar limits default to 0 = DISABLED, so an
+# existing install is unchanged until you set one deliberately. A breach blocks
+# NEW ENTRIES only — never an exit, because getting out of a position is how you
+# reduce risk and a halt that trapped you in a loser would defeat its purpose.
+risk:
+  max_single_order_usdc: 0.0          # 0 = no cap on one order
+  max_open_exposure_usdc: 0.0         # 0 = no cap on total open value
+  max_daily_loss_usdc: 0.0            # 0 = no daily stop
+  idempotency_ttl_seconds: 120
+
+  # CAPITAL PRESERVATION. Fractions of the account rather than dollar amounts,
+  # so they keep meaning the same thing as the balance moves — a fixed dollar
+  # cap stops meaning anything the moment the account halves.
+  #
+  # Every one of these can only SHRINK or PAUSE. None can size a position up,
+  # none can open or close anything, and none can block an exit. They exist so
+  # a bad sequence cannot end the account while a strategy is being diagnosed,
+  # and `min_size_scale` exists so that protection can never silence the edge
+  # entirely.
+  preservation:
+    enabled: true
+    # Never spend the last of the account. Below this share of equity in cash,
+    # new entries pause; exits continue and refill it.
+    min_cash_reserve_fraction: 0.10
+    # Total mark-to-market of everything open, as a share of equity.
+    max_total_exposure_fraction: 0.60
+    # ...and the share any ONE bet may hold. Positions sharing a market, a
+    # tracked-wallet thesis or a category are one bet held several times, and
+    # counting them as independent risks is how a diversified-looking book
+    # takes the same loss four times over.
+    max_cluster_fraction: 0.25
+    # Below peak equity by this much: new entries stop entirely. Open positions
+    # are still managed and still exit. 0 = off.
+    halt_entries_drawdown_pct: 0.45
+    # The sizing ramp. Between these two drawdown levels the stake multiplier
+    # falls linearly from 1.0 to `min_size_scale`, and it NEVER rises — a loss
+    # cannot increase the next stake, which makes martingale behaviour
+    # structurally impossible rather than merely discouraged.
+    shrink_from_drawdown_pct: 0.15
+    shrink_to_drawdown_pct: 0.40
+    min_size_scale: 0.40
+
+# ---------------------------------------------------------------------------
+# WALLET STATE TRANSITION RESEARCH — an isolated research subsystem, OFF.
+#
+# Studies what a wallet does AFTER it first buys the OPPOSITE outcome in a
+# market it was already in: does it push to a genuinely aggressive opposite
+# position, or is it rebalancing to protect what it holds? The frozen RN1
+# two-threshold rule is preserved as a permanent benchmark and is never
+# retuned.
+#
+# NOT the same thing as `intel.wallet_state_*` above, which studies a
+# different RN1 hypothesis (first-buy price band + silence). Nothing here
+# affects that.
+#
+# TWO flags before any of it can reach a decision, the same discipline that
+# guards live trading: `enabled` turns the RESEARCH on, and
+# `integration_enabled` is separately required before the signal API returns
+# anything but NO_SIGNAL. With both false — the shipped default — the engine
+# behaves exactly as it did before this module existed, and no engine module
+# imports the package at all.
+#
+# Run the study by hand at any time with `pqb wallet-state-research`; that
+# command is read-only and does not consult these flags, because they guard
+# the ENGINE, not the operator.
+wallet_state_research:
+  enabled: false
+  integration_enabled: false          # required as well, for any signal
+  mode: "ResearchOnly"
+  # research_only -> backtest -> walk_forward -> paper -> observe -> influence
+  # Only a person editing this line can advance it. Nothing promotes itself.
+  stage: "research_only"
+
+  # -- RN1 Strategy Model V1: the AUTHORITATIVE frozen model ----------------
+  # Predicts at the FIRST BUY, three states, two inputs. The older +3m
+  # post-opposite rule is retained as a SUPPORTING benchmark only.
+  frozen_v1_enabled: true
+  # The clean prospective boundary. DO NOT MOVE IT: moving it invalidates
+  # every forward number produced before the move, which is the whole reason
+  # a frozen boundary exists (see section 50 of the handoff).
+  prospective_boundary_utc: "2026-08-20T16:10:00+00:00"
+  prediction_freshness_minutes: 15.0
+  # The frozen V1 thresholds, here so they are auditable in one place. They
+  # are NOT read from config by the model - `strategy_v1` holds the
+  # authoritative constants and a test pins them, so editing these lines
+  # changes the documentation and not the experiment.
+  initial_aggressive_price_threshold: 0.20
+  initial_aggressive_capital_minimum: 5.00
+  initial_directional_price_threshold: 0.80
+  label_opposite_ratio_threshold: 1.40
+  # The position-state machine and the P(next | current) study.
+  transitions_enabled: true
+  # MDL hidden-structure search. Off by default and slow; the null model is
+  # allowed to win and usually does.
+  structure_discovery_enabled: false
+  paper_trading_enabled: false
+  live_execution_enabled: false
+  frozen_rn1_enabled: true            # the permanent benchmark
+  cross_wallet_enabled: true          # does it generalise beyond RN1?
+  cross_market_enabled: true          # ...and beyond one kind of market?
+  discovery_enabled: false            # fit alternative models (dev window only)
+  # A cohort below this many graded cases is reported as INSUFFICIENT SAMPLE
+  # rather than given an accuracy nobody should read.
+  minimum_wallet_samples: 12
+  minimum_market_samples: 12
+  # The frozen horizon. 1/5/10 are reported beside it for sensitivity and are
+  # never used to re-pick it.
+  signal_horizon_minutes: 3.0
+  extra_horizons: [1.0, 5.0, 10.0]
+  stakes: [5.0, 10.0, 25.0]
+  # Days the tape must keep running after an episode's last activity before
+  # its lifecycle label is trusted. Below this the label says "we stopped
+  # watching", not "the wallet stopped trading". The run reports the whole
+  # sensitivity curve across 1/2/3/7 days, so this choice cannot hide a result.
+  label_quiet_days: 2.0
+  walk_forward_folds: 4
+  max_wallets: 0                      # 0 = every wallet; RN1 always included
+  min_wallet_trades: 20
+  output_dir: "state/research/wallet_state"
+
+storage:
+  data_dir: "state"
+  journal_db: "state/journal.sqlite3"
+
+logging:
+  level: "INFO"                       # DEBUG | INFO | WARNING | ERROR
+  file: "state/pqb.log"
+  max_bytes: 2000000
+  backups: 5
+
+# The liquidation-cascade hypothesis (research candidate, never a rule):
+# large BTC liquidations -> forced flow -> possible short-term direction in
+# the 5-minute Polymarket BTC UP/DOWN market. The monitor records EVERY
+# event above dust plus no-event baseline windows; the numbers below are the
+# hypothesis's STARTING POINTS, stored as qualifying flags on each event so
+# research can test nearby regions - they never filter what is captured.
+cascade:
+  enabled: true
+  source: "okx"                    # okx | binance (binance is geo-blocked in some regions)
+  symbol: "BTCUSDT"
+  qualify_liquidation_usd: 5000    # the transcript's liquidation trigger
+  qualify_position_usd: 100000     # awaits a per-position data source
+  qualify_proximity_pct: 0.5       # awaits a per-position data source
+  min_record_usd: 100              # dust floor only
+  baseline_interval_s: 600
+  min_sample: 30                   # resolved events before any claim

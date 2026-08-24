@@ -1,0 +1,66 @@
+# Periodic strategy discovery through the Quant Bridge.
+#
+# This is what keeps the brain current. The live service captures a feature
+# series continuously; this unit turns that series into rules — export per
+# token, discovery, walk-forward, Monte Carlo, ranking, cross-token
+# confirmation — and writes state/strategies.json, which the running bridge
+# re-reads within ten minutes without a restart.
+#
+# It is a Type=oneshot driven by pqb-research.timer, NOT a second daemon. Two
+# processes writing the journal concurrently is exactly what the single-writer
+# SQLite discipline is designed to avoid; this one only reads the journal and
+# writes its own outputs.
+#
+#   systemctl start pqb-research        # run it now
+#   journalctl -u pqb-research -f
+
+[Unit]
+Description=Polymarket Quant Bridge — strategy discovery
+Documentation=file:/opt/polymarket-quant-bridge/docs/VPS-GUIDE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pqb
+Group=pqb
+WorkingDirectory=/opt/polymarket-quant-bridge
+EnvironmentFile=/etc/pqb/pqb.env
+
+ExecStart=/opt/polymarket-quant-bridge/.venv/bin/python -m pqb.cli \
+          --config /opt/polymarket-quant-bridge/config/config.yaml research
+
+# Discovery is CPU-bound and runs for minutes. Niced so it can never starve the
+# trading loop, which is latency-sensitive and shares the box.
+Nice=10
+IOSchedulingClass=idle
+CPUWeight=20
+
+# A research run that hangs must not block the next one forever.
+TimeoutStartSec=3600
+
+# Feature engineering builds a wide DataFrame per token series and is the
+# largest allocation this project makes. Capped so a pathological run is killed
+# rather than pushing the box into swap and stalling the trading loop, which
+# shares the machine and is latency-sensitive. A kill here costs one night of
+# discovery; the trading loop stalling costs fills.
+MemoryMax=1500M
+MemoryHigh=1200M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pqb-research
+
+# --- hardening (same posture as the trading service) ---
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/opt/polymarket-quant-bridge/state
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
