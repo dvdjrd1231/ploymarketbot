@@ -133,6 +133,10 @@ class Runner:
         # starts sees "no caps" rather than an attribute error.
         from . import riskpolicy as _riskpolicy
         self._preservation = _riskpolicy.PolicyVerdict()
+        # LAYER 2 (pqb.consistency): the entry thesis per open lifecycle. A
+        # constant per position, so it is read from the journal once rather
+        # than every cycle; pruned when the position leaves the book.
+        self._theses: dict = {}
         # Auto-discovery: run the Quant Bridge's strategy discovery from inside
         # the bot so the dashboard user never needs a command line. Heavy, so it
         # runs on its own timer in a thread and writes a status file the GUI reads.
@@ -593,6 +597,7 @@ class Runner:
             market = markets.get(decision.market_id)
             self.journal.record_decision(decision, cycle_id, market)
             self._log_decision(log, decision)
+        self._record_consistency(decisions, log)
 
         # Risk §3: a breach blocks new ENTRIES for the rest of the cycle (and,
         # for daily loss, the day) while still letting exits through. Computed
@@ -1314,10 +1319,12 @@ class Runner:
         *history*, and the engine is stateless by contract — so the history is
         read from the journal and handed over with the position.
         """
+        live: set = set()
         for position in positions:
             row = self.journal.find_open_lifecycle(position.token_id)
             if row is None:
                 continue
+            live.add(row["id"])
             position.lifecycle_id = row["id"]
             price = position.cur_price or position.avg_price
             position.peak_price = max(row["peak_price"] or 0.0, price)
@@ -1326,7 +1333,86 @@ class Runner:
                 position.opened_ts = int(row["entry_ts"])
             # Consumed by the engine's reduce-once check.
             setattr(position, "reduced_count", row["reduced_count"] or 0)
+            # LAYER 2 (pqb.consistency). Same principle as peak/trough above:
+            # the safety layer asks whether the ORIGINAL entry thesis still
+            # holds, and the confirmation streak is a fact about the position's
+            # history — so both are read from the journal and handed over with
+            # the position rather than held in an engine that is stateless by
+            # contract.
+            setattr(position, "thesis_state", row.get("thesis_state") or "")
+            setattr(position, "thesis_streak",
+                    int(row.get("thesis_streak") or 0))
+            setattr(position, "entry_thesis",
+                    self._entry_thesis(row["id"],
+                                       row.get("entry_decision_id"),
+                                       row.get("entry_ts") or 0.0,
+                                       row.get("wallet_influence") or ""))
             self.journal.track_evolution(position)
+        # Drop cached theses for positions that have closed, so the cache is
+        # bounded by the open book rather than by the session's history.
+        for stale in [k for k in self._theses if k not in live]:
+            self._theses.pop(stale, None)
+
+    def _entry_thesis(self, lifecycle_id: int, decision_id, entry_ts: float,
+                      wallet_influence: str):
+        """The entry thesis for one position, read once and cached.
+
+        The entry decision never changes, so re-reading it every cycle for
+        every position would be a query per position per cycle to obtain a
+        constant. Cached on the runner and keyed by lifecycle; the dict is
+        bounded by the number of positions this process has ever opened, and
+        entries for closed lifecycles are dropped when the position leaves the
+        book.
+        """
+        from .consistency import EntryThesis
+
+        cached = self._theses.get(lifecycle_id)
+        if cached is not None:
+            return cached
+        row = self.journal.entry_decision(decision_id)
+        thesis = EntryThesis.from_journal(
+            (row or {}).get("rationale"), (row or {}).get("features"),
+            entry_ts=float(entry_ts or 0.0),
+            wallet_influence=wallet_influence
+            or str((row or {}).get("wallet_influence") or ""))
+        self._theses[lifecycle_id] = thesis
+        return thesis
+
+    def _record_consistency(self, decisions: list, log: Log) -> None:
+        """Persist Layer 2's readings for the cycle.
+
+        Two different writes, for two different questions:
+
+          * the health reading and its confirmation streak go on the lifecycle,
+            because the next cycle needs them to know whether an INVALIDATED
+            reading is the first or the third; and
+          * the first trigger goes to `consistency_shadow`, because Module 20
+            asks what happened AFTER the layer wanted out, and that needs the
+            moment it wanted out rather than the last moment it still did.
+
+        Both are no-ops when the layer is off or nothing was triggered, and
+        neither can fail the cycle: a diagnostic that could stop the trading
+        loop would be a worse problem than the one it measures.
+        """
+        for decision in decisions:
+            verdict = (decision.rationale or {}).get("consistency")
+            if not verdict or decision.lifecycle_id is None:
+                continue
+            try:
+                self.journal.record_thesis(
+                    decision.lifecycle_id, str(verdict.get("health") or ""),
+                    int(verdict.get("streak") or 0))
+                if verdict.get("triggered"):
+                    self.journal.record_consistency(
+                        decision.lifecycle_id, decision.token_id, verdict)
+                    log.info(
+                        "consistency layer "
+                        + ("EXIT" if verdict.get("enforced") else "shadow exit")
+                        + f": {verdict.get('reason', '')}",
+                        token=str(decision.token_id)[:12],
+                        style=verdict.get("style", ""))
+            except Exception as exc:                       # noqa: BLE001
+                log.warning("Consistency journalling failed", error=repr(exc))
 
     def _pin_open_positions(self) -> bool:
         """Tell the data adapter which markets we are holding.

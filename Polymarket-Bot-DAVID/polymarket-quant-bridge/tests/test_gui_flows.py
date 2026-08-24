@@ -192,3 +192,53 @@ def test_bool_setting_roundtrips_via_widgets(dash):
     assert load(dash.config_path).engine.exits.stagnation_enabled is True
     dash.load_settings()
     assert check.isChecked()
+
+
+def test_the_results_tab_renders_the_consistency_block(dash):
+    """§26 of the consistency patch, in the real widget.
+
+    A panel that raises on a fresh install takes the whole Results tab down
+    with it, and the Results tab is where the operator looks to decide whether
+    any of this is working — so it is driven here rather than approximated.
+
+    The wording assertions are not cosmetic. On an install where nothing has
+    been promoted, the block has to say that plainly; a panel that merely
+    showed "SHADOW" without saying no candidate has qualified reads as though
+    the layer is doing something for you, which is the one impression this
+    patch must never give.
+    """
+    dash._fill_consistency()
+    text = dash.consistency_note.text()
+
+    assert "CONSISTENCY ENGINE" in text
+    assert "Thesis health" in text
+    assert "Risk guard:" in text and "NORMAL" in text
+    assert "SHADOW" in text
+    assert "No candidate has met the promotion bar" in text
+
+
+def test_the_consistency_block_reports_the_open_book_not_history(dash):
+    """The thesis census answers "what am I holding", so it must move when the
+    book moves — and a closed position must not appear in it."""
+    from pqb.journal import Journal
+
+    # Through the Journal rather than raw sqlite3: it creates the state
+    # directory and applies the schema, which is what the running bot does.
+    journal = Journal(dash.cfg.journal_path)
+    try:
+        journal._conn.execute(
+            "INSERT INTO lifecycles(token_id, status, thesis_state) "
+            "VALUES('a','OPEN','WEAKENING')")
+        journal._conn.execute(
+            "INSERT INTO lifecycles(token_id, status, thesis_state) "
+            "VALUES('b','CLOSED','INVALIDATED')")
+        journal._conn.commit()
+    finally:
+        journal.close()
+
+    dash.reader._consistency_cache = None
+    dash._fill_consistency()
+    text = dash.consistency_note.text()
+    assert "weakening 1" in text
+    assert "invalidated 0" in text          # closed, so not in the book
+    assert "WATCHING" in text               # ...and the guard says so

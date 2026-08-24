@@ -71,6 +71,10 @@ class Validation:
     walk: list[Result] = field(default_factory=list)
     robustness: RobustnessReport | None = None
 
+    # §46 population control — see baseline.py for why this decides everything.
+    alpha: float = 0.0
+    population: dict = field(default_factory=dict)
+
     # generalisation cells
     same_wallet_new_markets: Result | None = None
     cross_wallet: list[tuple[str, Result]] = field(default_factory=list)
@@ -101,18 +105,27 @@ class Validation:
         if t.n_filled < 30:
             return 0.0
 
-        oos = max(-1.0, min(1.0, t.expectancy * 10))       # economic size
+        # The economic term is ALPHA, not expectancy. A rule that earns +20%
+        # by buying the same underpriced favourites everyone else is buying
+        # scores zero here, however good its P&L looks (see baseline.py).
+        oos = max(-1.0, min(1.0, self.alpha * 10))
         consistency = self.walk_consistency()               # 0..1
-        cross = self.cross_wallet_consistency()             # 0..1
         breadth = min(1.0, len(t.markets) / 20.0)           # market diversity
         conc_pen = 1.0 - t.concentration()                  # one-market penalty
         dd_pen = 1.0 - min(1.0, t.max_drawdown() / max(1.0, abs(t.pnl) + 1.0))
         fill = t.fill_rate
 
+        # NOTE the sign. High cross-wallet consistency is *evidence against* a
+        # wallet-specific edge: if the same filter works on everyone else's
+        # trades, the wallet is contributing nothing and the effect is market
+        # structure. §9 asks whether a rule generalises; this project asks
+        # whether a WALLET is worth following, and those pull opposite ways.
+        wallet_specific = 1.0 - self.cross_wallet_consistency()
+
         raw = (
-            0.30 * oos
+            0.35 * oos
             + 0.20 * consistency
-            + 0.20 * cross
+            + 0.15 * wallet_specific
             + 0.10 * breadth
             + 0.10 * conc_pen
             + 0.05 * dd_pen
@@ -131,6 +144,10 @@ class Validation:
             return "FAILED"
         if self.oos_p() > fdr_threshold:
             return "NOT_SIGNIFICANT"
+        # The population control decides before robustness does. A market-wide
+        # effect can be perfectly robust and still say nothing about the wallet.
+        if self.population and self.population.get("n", 0) >= 30 and self.alpha <= 0:
+            return "NO_WALLET_ALPHA"
         if self.robustness and self.robustness.verdict == "FRAGILE":
             return "OVERFIT"
         if t.concentration() > 0.60:

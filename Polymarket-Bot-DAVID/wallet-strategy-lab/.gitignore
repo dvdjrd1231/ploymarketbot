@@ -1,0 +1,9 @@
+# Experiment registry and caches are per-machine research state, not source.
+experiments.sqlite3
+experiments.sqlite3-wal
+experiments.sqlite3-shm
+cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/

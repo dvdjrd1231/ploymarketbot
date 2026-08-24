@@ -504,6 +504,78 @@ class ExitConfig:
 
 
 @dataclass
+class ConsistencyConfig:
+    """LAYER 2 — the consistency / loss-minimisation safety exit.
+
+    See :mod:`pqb.consistency`. This config governs a layer that can only ever
+    look at a position the strategy has already decided to HOLD; it cannot
+    reach a take-profit, a stop, a trailing exit or an entry.
+
+    **Every default here is inert.** `mode` is shadow, so no decision changes.
+    `min_adverse_room_pct` is 0, which hard-blocks the thesis exit even in
+    enforce mode. The loss-tail guard and the profit floor are off. The reason
+    is Module 15 and the absolute rule about the 16-trade sample: the two
+    numbers that would need a distribution to set honestly — how much room a
+    real winner needs, and the excursion at which profit is worth protecting —
+    are outputs of `pqb.analytics.consistency_research`, not inputs chosen
+    here. A default that fired would be a rule fitted to sixteen trades.
+
+    The structural thresholds (how many failed conditions is "invalidated",
+    how many consecutive readings confirm it) are NOT fitted quantities; they
+    are the shape of the detector, and they are few on purpose — the
+    overfitting penalty in the research scorer counts every one of them.
+    """
+
+    # Collect the trade-state record and compute the health reading. Cheap,
+    # and turning it off blinds the research layer, so it defaults on.
+    enabled: bool = True
+    # "shadow" records the verdict and changes nothing (Module 20).
+    # "enforce" acts on it. "off" computes nothing at all.
+    mode: str = "shadow"
+
+    # -- thesis health (Module 3) -------------------------------------------
+    # Fewer checkable entry conditions than this and the answer is UNKNOWN,
+    # which never triggers anything.
+    min_evidence: int = 2
+    weakening_at: int = 1        # failed conditions that read as WEAKENING
+    invalidate_at: int = 2       # ...and as INVALIDATED
+    # Live hold-conviction below this share of the entry score counts as the
+    # score condition having failed.
+    score_floor_fraction: float = 0.6
+    # Liquidity below this share of the book the entry was scored against.
+    liquidity_collapse_fraction: float = 0.5
+    # Spread wider than this multiple of the spread at entry.
+    spread_blowout_multiple: float = 2.0
+    # No opinion at all inside this window. A cold first cycle after a restart
+    # has no live book and would read as total collapse.
+    grace_seconds: float = 300.0
+    # Consecutive INVALIDATED readings before the exit candidate is real. Any
+    # other reading resets the count, so a flicker cannot accumulate.
+    confirm_cycles: int = 3
+
+    # -- winner protection (Module 6) ---------------------------------------
+    # The measured distance a historical winner normally travels against the
+    # position before becoming profitable. Layer 2 will not act on a position
+    # that has not moved at least this far against us, whatever the thesis
+    # reading says. 0 = not yet measured = the thesis exit cannot fire.
+    min_adverse_room_pct: float = 0.0
+
+    # -- loss tail guard (Module 7) -----------------------------------------
+    # Account protection, independent of the strategy stop: binds on the loss
+    # as a share of EQUITY, which is the quantity the stop cannot see.
+    loss_tail_enabled: bool = False
+    max_single_trade_loss_pct: float = 0.0
+
+    # -- profit locking (Module 8) ------------------------------------------
+    # Arms only after this much favourable excursion, then protects that
+    # fraction of it. 0 = disabled. A winner that normally runs +30% must not
+    # be stopped at +5%, so this is set from the winner-path distribution or
+    # not at all.
+    profit_floor_arm_pct: float = 0.0
+    profit_floor_keep_fraction: float = 0.5
+
+
+@dataclass
 class PortfolioConfig:
     # How many positions may be open at once. 0 means NO LIMIT — the Quant
     # Bridge decides how many to hold, bounded only by available cash. This is
@@ -612,6 +684,10 @@ class EngineConfig:
     filter: HighConfidenceConfig = field(default_factory=HighConfidenceConfig)
     exits: ExitConfig = field(default_factory=ExitConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
+    # Layer 2. Lives under the engine rather than under `risk` because it is
+    # an EXIT-side layer and the engine is what consults it; `risk.preservation`
+    # remains the entry-side caps and the two never see each other.
+    consistency: ConsistencyConfig = field(default_factory=ConsistencyConfig)
 
 
 @dataclass
@@ -1216,6 +1292,9 @@ def _build_engine(data: dict) -> EngineConfig:
             engine.exits = _build(ExitConfig, data["exits"])
         if isinstance(data.get("portfolio"), dict):
             engine.portfolio = _build(PortfolioConfig, data["portfolio"])
+        if isinstance(data.get("consistency"), dict):
+            engine.consistency = _build(ConsistencyConfig,
+                                        data["consistency"])
         if isinstance(data.get("filter"), dict):
             engine.filter = _build(HighConfidenceConfig, data["filter"])
             allowed = engine.filter.allowed_states

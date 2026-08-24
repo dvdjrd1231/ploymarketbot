@@ -383,6 +383,50 @@ class Reader:
         self._mm_cache = (now, data)
         return data
 
+    def consistency(self) -> dict:
+        """The consistency engine's summary for the Results tab, cached.
+
+        Same cadence and same reason as `money_management`: it replays every
+        trade's captured path and that is not free, while the answer only
+        changes when a trade closes. Failures are swallowed into an
+        unavailable-with-a-reason rather than raised — a diagnostic panel that
+        can take the dashboard down is worse than one that says it has nothing
+        to show.
+        """
+        now = time.time()
+        cached = getattr(self, "_consistency_cache", None)
+        if cached is not None and now - cached[0] < 300.0:
+            return cached[1]
+        from ..analytics import consistency_research
+
+        try:
+            data = consistency_research.report(
+                self.journal,
+                self.intel if getattr(self, "intel", None) else "",
+                config=self.cfg,
+                starting_balance=float(
+                    self.cfg.mode.paper_starting_balance or 0.0))
+        except Exception:                                # noqa: BLE001
+            data = {"available": False, "reason": "study unavailable"}
+        self._consistency_cache = (now, data)
+        return data
+
+    def thesis_census(self) -> dict:
+        """How many OPEN positions are in each thesis-health state.
+
+        Read straight off the lifecycles rather than from the study, because
+        this is about the book right now and the study is about history — and
+        a panel that mixed the two would be answering neither question.
+        """
+        rows = _rows(self.journal,
+                     "SELECT thesis_state, COUNT(*) AS n FROM lifecycles "
+                     "WHERE status='OPEN' GROUP BY thesis_state")
+        out = {"HEALTHY": 0, "WEAKENING": 0, "INVALIDATED": 0, "UNKNOWN": 0}
+        for row in rows:
+            key = str(row.get("thesis_state") or "") or "UNKNOWN"
+            out[key] = out.get(key, 0) + int(row.get("n") or 0)
+        return out
+
     def counterfactual_by_trade(self) -> dict:
         """``lifecycle_id -> what holding 30 minutes longer would have done``.
 

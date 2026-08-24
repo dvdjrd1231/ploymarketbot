@@ -99,6 +99,87 @@ class BaselineDecisionEngine:
 
     def _evaluate_position(self, position: PositionView,
                            context: BridgeContext) -> Decision:
+        """Layer 1, then Layer 2 — and Layer 2 only ever sees a HOLD.
+
+        The two-layer architecture (Module 19 of the consistency patch) is
+        enforced by this method's shape rather than by discipline inside the
+        safety layer. ``_baseline_position_verdict`` is the entire unchanged
+        strategy; whatever it returns for an EXIT, a REDUCE or a HOLD it was
+        going to return before this patch existed. Only when it returns a
+        HOLD is :mod:`pqb.consistency` consulted, so there is no code path by
+        which the safety layer can displace a take-profit, loosen a stop, or
+        close a position the strategy wanted kept for a reason of its own.
+
+        That matters because of what the record says: take-profit exits are
+        100% winners at +30.8% average and stop exits are 0% winners at -46.3%.
+        The engine that produced the first number is the asset here. A safety
+        layer able to reach it would be trading the asset for the liability,
+        so it is not able to reach it.
+        """
+        decision = self._baseline_position_verdict(position, context)
+        if decision.action is not Action.HOLD:
+            return decision
+        return self._apply_safety_layer(decision, position, context)
+
+    def _apply_safety_layer(self, decision: Decision, position: PositionView,
+                            context: BridgeContext) -> Decision:
+        """Consult Layer 2 and, in enforce mode only, act on it.
+
+        In shadow mode — the default — the verdict is attached to the decision's
+        rationale and the HOLD is returned untouched. The rationale is
+        journalled for every decision including HOLDs, and the runner also
+        writes the first trigger to `consistency_shadow`, so a shadow run
+        produces exactly the evidence Module 21's promotion gate needs without
+        any of it having changed a trade.
+        """
+        cfg = getattr(self.cfg, "consistency", None)
+        if cfg is None or not getattr(cfg, "enabled", False):
+            return decision
+        if str(getattr(cfg, "mode", "shadow")).lower() == "off":
+            return decision
+
+        from .. import consistency
+
+        thesis = getattr(position, "entry_thesis", None)
+        if thesis is None:
+            # No stored entry thesis (a position opened before this patch, or
+            # one whose entry decision was pruned). An empty thesis has no
+            # checkable conditions, so the detector answers UNKNOWN and nothing
+            # fires — which is the correct behaviour for "we cannot tell".
+            thesis = consistency.EntryThesis()
+
+        market = context.market_for(position)
+        quote = market.quote(position.token_id) if market else None
+        ms = (context.market_state or {}).get(position.token_id) or {}
+        state_now = ms.get("ms_state")
+        state = consistency.build_state(
+            position, thesis, conviction=decision.confidence,
+            now=time.time(), market=market, quote=quote,
+            wallet_exited=self._wallet_exit_signal(position,
+                                                   context) is not None,
+            correlated_positions=consistency.correlated_count(
+                position, context.positions),
+            market_state_now="" if state_now in (None, "") else str(state_now))
+
+        verdict = consistency.evaluate(
+            cfg, state, thesis,
+            prior_state=str(getattr(position, "thesis_state", "") or ""),
+            prior_streak=int(getattr(position, "thesis_streak", 0) or 0),
+            equity=float(context.account.portfolio_value or 0.0),
+            band=(self.cfg.entry.min_price, self.cfg.entry.max_price))
+
+        decision.rationale["consistency"] = verdict.to_dict()
+        if not verdict.enforced:
+            return decision
+
+        decision.action = Action.EXIT
+        decision.exit_style = f"safety_{verdict.style}"
+        decision.reason = verdict.reason
+        decision.size_shares = position.size
+        return decision
+
+    def _baseline_position_verdict(self, position: PositionView,
+                                   context: BridgeContext) -> Decision:
         market = context.market_for(position)
         quote = market.quote(position.token_id) if market else None
         exits = self.cfg.exits

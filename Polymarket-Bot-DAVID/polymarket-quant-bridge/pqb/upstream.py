@@ -71,16 +71,20 @@ from backend.services.gamma import (  # noqa: E402
 )
 from backend.services.price_service import Book, PriceService  # noqa: E402
 from backend.services.trading import (  # noqa: E402
+    DetectedAccount,
     OrderResult,
     PolymarketError,
     TradingClient,
+    autodetect_account,
     clob_available,
     derive_signer_address,
+    normalize_private_key,
 )
 
 __all__ = [
     "Book",
     "DataApiClient",
+    "DetectedAccount",
     "GammaClient",
     "MarketInfo",
     "OrderResult",
@@ -91,9 +95,11 @@ __all__ = [
     "TradingClient",
     "UpstreamAccountSnapshot",
     "UpstreamNotFound",
+    "autodetect_account",
     "clob_available",
     "derive_signer_address",
     "ensure_on_path",
+    "normalize_private_key",
     "iso_to_ts",
     "upstream_root",
 ]

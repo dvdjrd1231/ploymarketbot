@@ -388,6 +388,56 @@ engine:
     edge_exit_floor: 0.30
     edge_exit_grace_seconds: 180
 
+  # LAYER 2 — the consistency / loss-minimisation safety exit.
+  #
+  # This layer only ever sees a position the exits ABOVE have already decided
+  # to hold. It cannot reach a take-profit, a stop or a trailing exit, and it
+  # cannot open anything. Its one job is to tell temporary adverse movement
+  # apart from genuine failure of the thesis the entry was taken on, and to
+  # get out of the second case before the loss becomes disproportionate.
+  #
+  # EVERY DEFAULT HERE IS INERT. mode is "shadow", so it records what it would
+  # have done and changes nothing; min_adverse_room_pct is 0, which blocks the
+  # thesis exit outright even in enforce mode; the loss-tail guard and the
+  # profit floor are off. That is deliberate: the two numbers that decide how
+  # much room a winner needs and when profit is worth protecting are outputs
+  # of `pqb consistency`, not values anyone should pick by hand.
+  #
+  # Run `pqb consistency` to see the study. Move `mode` to "enforce" only for
+  # a candidate the report says has met all seven promotion requirements.
+  consistency:
+    enabled: true                     # collect the diagnostics (cheap)
+    mode: "shadow"                    # "shadow" | "enforce" | "off"
+
+    # Thesis health. Fewer checkable entry conditions than min_evidence and
+    # the answer is UNKNOWN, which never triggers anything.
+    min_evidence: 2
+    weakening_at: 1                   # failed conditions that read as WEAKENING
+    invalidate_at: 2                  # ...and as INVALIDATED
+    score_floor_fraction: 0.6         # conviction below this share of entry
+    liquidity_collapse_fraction: 0.5  # liquidity below this share of entry
+    spread_blowout_multiple: 2.0      # spread above this multiple of entry
+    grace_seconds: 300                # no opinion at all inside this window
+    confirm_cycles: 3                 # consecutive INVALIDATED readings needed
+
+    # The measured distance a real winner normally travels AGAINST us before
+    # coming good. Nothing may act inside it. 0 = not measured yet = the
+    # thesis exit cannot fire. Set it from the winner-room section of
+    # `pqb consistency`, never by choosing a number that looks reasonable.
+    min_adverse_room_pct: 0.0
+
+    # Account protection, independent of the stop: binds on the loss as a
+    # share of EQUITY, which is the thing a per-position stop cannot see.
+    loss_tail_enabled: false
+    max_single_trade_loss_pct: 0.0
+
+    # Profit locking. Arms only after this much favourable excursion, then
+    # protects that fraction of it. 0 = off. A winner that normally runs +30%
+    # must not be repeatedly stopped at +5%, so set this from the winner-path
+    # distribution or leave it off.
+    profit_floor_arm_pct: 0.0
+    profit_floor_keep_fraction: 0.5
+
   portfolio:
     max_open_positions: 0             # 0 = no limit; the Quant Bridge decides
     max_position_fraction: 0.25       # per position, of portfolio value

@@ -638,6 +638,17 @@ class Dashboard(QMainWindow):
             ["What", "Which", "Trades", "Net", "Share of loss",
              "Share of profit", "Median hold", "Reading"])
         layout.addWidget(self.mm_table)
+
+        # CONSISTENCY ENGINE (§26). One compact block, deliberately: the whole
+        # study is a page of numbers and putting it here would bury the
+        # performance table above it. What a person needs at a glance is the
+        # shape of the return distribution, the health of what is currently
+        # open, and whether the safety layer is baseline, shadow or validated.
+        # Everything else is `pqb consistency`.
+        self.consistency_note = QLabel()
+        self.consistency_note.setWordWrap(True)
+        self.consistency_note.setStyleSheet(PANEL_STYLE)
+        layout.addWidget(self.consistency_note)
         self.tabs.addTab(page, "Results")
 
     def _build_discovery(self):
@@ -1808,6 +1819,7 @@ class Dashboard(QMainWindow):
             # The diagnostics pane still fills: it has its own "nothing to
             # diagnose yet" message, and a blank panel reads as a broken one.
             self._fill_money_management()
+            self._fill_consistency()
             return
 
         bw = self.reader.best_and_worst()
@@ -1830,6 +1842,79 @@ class Dashboard(QMainWindow):
                      "from these; it needs about 20 finished trades.</i>")
         self.results_note.setText(note)
         self._fill_money_management()
+        self._fill_consistency()
+
+    def _fill_consistency(self):
+        """§26: the CONSISTENCY ENGINE block. Compact on purpose.
+
+        Three questions and no more: what does the return distribution look
+        like, what is the health of what we are holding right now, and is the
+        safety layer measuring or acting. The win rate is shown but not led
+        with — it is the number that most tempts a reader into the wrong
+        conclusion, and the expectancy beside it is the one that matters.
+        """
+        data = self.reader.consistency()
+        census = self.reader.thesis_census()
+        cfg = getattr(self.reader.cfg.engine, "consistency", None)
+        mode = str(getattr(cfg, "mode", "shadow")).lower()
+
+        candidates = (data.get("candidates") or {}) if data.get("available") \
+            else {}
+        promotable = candidates.get("promotable") or []
+        if mode == "off":
+            model = "BASELINE — the safety layer is switched off"
+        elif mode == "enforce":
+            model = "VALIDATED — the safety layer is acting on its findings"
+        elif promotable:
+            model = ("SHADOW — measuring only. "
+                     f"{len(promotable)} candidate(s) have met the promotion "
+                     "bar and are waiting for you to enable them")
+        else:
+            model = ("SHADOW — measuring only. No candidate has met the "
+                     "promotion bar, so nothing is acting on anything")
+
+        guard = "NORMAL"
+        if census.get("INVALIDATED"):
+            guard = f"ACTIVE — {census['INVALIDATED']} position(s) invalidated"
+        elif census.get("WEAKENING"):
+            guard = f"WATCHING — {census['WEAKENING']} position(s) weakening"
+
+        parts = ["<b>CONSISTENCY ENGINE</b> — the shape of the returns, not "
+                 "just the total."]
+        if not data.get("available"):
+            parts.append(
+                "<i>Nothing to measure yet: "
+                f"{data.get('reason', 'no closed trades')}.</i>")
+        else:
+            base = data["baseline"]
+            growth = data.get("protectedGrowth") or {}
+            parts.append(
+                f"<b>Expectancy</b> {base['expectancy']:+.4f} per trade · "
+                f"<b>average winner</b> {base['avgWinner']:+.2f} · "
+                f"<b>average loser</b> {base['avgLoser']:+.2f} · "
+                f"<b>win rate</b> {base['winRate']:.0%} · "
+                f"<b>profit factor</b> {base['profitFactor']:.2f}")
+            parts.append(
+                f"<b>Max drawdown</b> ${base['maxDrawdown']:.2f} · "
+                f"<b>95% loss</b> ${base['p95Loss']:.2f} · "
+                f"<b>largest loss</b> ${abs(base['largestLoser']):.2f} · "
+                f"<b>kept from peak</b> "
+                f"{growth.get('retainedFromPeak', 0):.0%}")
+            room = data.get("winnerRoom") or {}
+            if room.get("available"):
+                parts.append(
+                    "<b>Room a winner needs:</b> nine winners in ten stay "
+                    f"inside {room['winners']['p90']:.1%} of adverse "
+                    "movement. Nothing may act inside that.")
+
+        parts.append(
+            f"<b>Thesis health (open):</b> healthy {census.get('HEALTHY', 0)} "
+            f"· weakening {census.get('WEAKENING', 0)} · invalidated "
+            f"{census.get('INVALIDATED', 0)} · unknown "
+            f"{census.get('UNKNOWN', 0)}")
+        parts.append(f"<b>Risk guard:</b> {guard} &nbsp;·&nbsp; "
+                     f"<b>Exit model:</b> {model}")
+        self.consistency_note.setText("<br>".join(parts))
 
     def _fill_money_management(self):
         """§23: what is hurting the equity curve, and what is saving it."""

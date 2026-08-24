@@ -1,0 +1,5 @@
+# walletlab runs on the Python standard library alone.
+# Python 3.11+ (uses dataclass slots and PEP 604 unions).
+#
+# Development only:
+pytest>=8.0

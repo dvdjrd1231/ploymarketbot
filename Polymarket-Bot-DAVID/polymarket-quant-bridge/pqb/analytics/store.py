@@ -65,6 +65,26 @@ CREATE INDEX IF NOT EXISTS idx_wt_market ON wallet_trades(market_id, ts);
 CREATE INDEX IF NOT EXISTS idx_wt_token  ON wallet_trades(token_id, ts);
 CREATE INDEX IF NOT EXISTS idx_wt_ts     ON wallet_trades(ts);
 
+-- Two COVERING indexes for the research layer's aggregate scans. Profiling a
+-- `wallet-state-research` pass showed three queries accounting for ~47% of its
+-- 37 s runtime, every one of them a full scan of 878k rows:
+--
+--   runner._wallet_shortlist   GROUP BY wallet          4.56 s -> 0.22 s  (21x)
+--   store.redemptions          WHERE event_type=REDEEM  5.14 s -> 0.21 s  (24x)
+--
+-- `event_type` had no index at all, so selecting 132k REDEEM rows scanned the
+-- whole table and built a temp B-tree. Both indexes are COVERING for their
+-- query -- every column the query reads is in the index -- so SQLite answers
+-- from the index without touching the table.
+--
+-- Indexes cannot change a query's results, only how fast it finds them, so
+-- this is a pure performance change with no effect on research output.
+-- Cost: ~6 s to build once, and a slightly wider write path on insert.
+CREATE INDEX IF NOT EXISTS idx_wt_event_type
+    ON wallet_trades(event_type, wallet, market_id, ts);
+CREATE INDEX IF NOT EXISTS idx_wt_wallet_market
+    ON wallet_trades(wallet, market_id);
+
 -- Hourly per-market rollups. Written before raw rows are pruned so a market's
 -- flow baseline outlives the trades it was measured from.
 CREATE TABLE IF NOT EXISTS market_flow (

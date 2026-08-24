@@ -77,9 +77,33 @@ def _connect(db: Path) -> sqlite3.Connection:
     return conn
 
 
-_SETTLED_SQL = """
-SELECT t.wallet, t.ts, t.token_id, t.market_id, t.outcome,
-       t.price, t.size, t.usdc, r.price, r.settled_ts, t.question
+# NOTE on the settlement clock, which is a real limitation of this dataset.
+#
+# `resolutions.settled_ts` is 0.0 in all 8,116 rows -- the ingester never
+# populated it. So the true moment an outcome became public is NOT recorded
+# anywhere in this database.
+#
+# `resolutions.ts` (when the system OBSERVED the resolution) is populated, and
+# is later than the trade in 100% of joined rows. It is therefore a safe upper
+# bound: using it can only DELAY the moment an outcome enters wallet state,
+# never advance it, so it cannot leak (S20). It is weak rather than wrong --
+# its range spans just 7.4 days, so trades older than that all appear to settle
+# at once, which suppresses wallet track-record features over most of the tape.
+#
+# Consequence, stated so nobody reads more into the results than they support:
+# point-in-time wallet track record cannot be faithfully reconstructed from
+# this data. Capturing true settlement time is the fix, and it is listed in
+# docs/AUDIT.md as a required backfill.
+_SETTLED_COLS = """
+       t.wallet, t.ts, t.token_id, t.market_id, t.outcome,
+       t.price, t.size, t.usdc, r.price,
+       CASE WHEN r.settled_ts > 0 THEN r.settled_ts ELSE r.ts END,
+       t.question
+"""
+
+# The FROM/WHERE half, shared by every query so the "evaluable universe" has
+# exactly one definition. Callers supply their own SELECT list.
+_SETTLED_FROM = """
   FROM wallet_trades t
   JOIN resolutions  r ON t.token_id = r.token_id
  WHERE t.event_type = ?
@@ -88,6 +112,8 @@ SELECT t.wallet, t.ts, t.token_id, t.market_id, t.outcome,
    AND t.usdc >= ?
    AND r.price IN (0.0, 1.0)
 """
+
+_SETTLED_SQL = "SELECT" + _SETTLED_COLS + _SETTLED_FROM
 
 
 def iter_settled(
@@ -142,11 +168,7 @@ def wallet_trade_counts(st: Settings, min_trades: int = 50) -> list[tuple[str, i
     """
     conn = _connect(st.data_db)
     try:
-        sql = _SETTLED_SQL.replace(
-            "SELECT t.wallet, t.ts, t.token_id, t.market_id, t.outcome,\n"
-            "       t.price, t.size, t.usdc, r.price, r.settled_ts, t.question",
-            "SELECT t.wallet, COUNT(*) n",
-        )
+        sql = "SELECT t.wallet, COUNT(*) n" + _SETTLED_FROM
         sql += " GROUP BY t.wallet HAVING n >= ? ORDER BY n DESC"
         rows = conn.execute(
             sql,
@@ -239,22 +261,16 @@ def inventory(st: Settings) -> dict:
         out["tape_days"] = round((int(hi or 0) - int(lo or 0)) / 86400.0, 1)
 
         params = [DECISION_EVENT, st.costs.min_price, st.costs.max_price, 1.0]
-        cnt_sql = _SETTLED_SQL.replace(
-            "SELECT t.wallet, t.ts, t.token_id, t.market_id, t.outcome,\n"
-            "       t.price, t.size, t.usdc, r.price, r.settled_ts, t.question",
-            "SELECT COUNT(*), COUNT(DISTINCT t.wallet), COUNT(DISTINCT t.token_id)",
-        )
+        cnt_sql = ("SELECT COUNT(*), COUNT(DISTINCT t.wallet), "
+                   "COUNT(DISTINCT t.token_id)" + _SETTLED_FROM)
         n, w, tk = conn.execute(cnt_sql, params).fetchone()
         out["settled_copyable_trades"] = int(n)
         out["settled_wallets"] = int(w)
         out["settled_tokens"] = int(tk)
 
         for k in (50, 100, 200, 500):
-            g = _SETTLED_SQL.replace(
-                "SELECT t.wallet, t.ts, t.token_id, t.market_id, t.outcome,\n"
-                "       t.price, t.size, t.usdc, r.price, r.settled_ts, t.question",
-                "SELECT t.wallet, COUNT(*) c",
-            ) + " GROUP BY t.wallet HAVING c >= ?"
+            g = ("SELECT t.wallet, COUNT(*) c" + _SETTLED_FROM
+                 + " GROUP BY t.wallet HAVING c >= ?")
             out[f"wallets_ge_{k}_settled"] = int(
                 conn.execute(f"SELECT COUNT(*) FROM ({g})", params + [k]).fetchone()[0]
             )

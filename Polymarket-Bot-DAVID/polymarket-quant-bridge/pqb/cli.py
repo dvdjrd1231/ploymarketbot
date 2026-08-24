@@ -51,6 +51,105 @@ def _logger(cfg):
 
 # --- commands ---------------------------------------------------------------
 
+def _wallet_report(args, *, offline: bool):
+    """Shared body of wallet-connect and wallet-check."""
+    from . import wallet_setup as ws
+
+    cfg = _load(args)
+    raw = ws.read_private_key(
+        key_file=getattr(args, "key_file", "") or None,
+        allow_prompt=not getattr(args, "no_prompt", False),
+    )
+    # Validate BEFORE echoing anything. If the operator pasted a seed phrase,
+    # nothing derived from it may reach the terminal.
+    key = ws.validate_key(raw)
+    print(f"key         : {ws.redact(key)}  (never printed, never written to config)")
+    report = ws.discover(
+        key,
+        host=cfg.polymarket.clob_host,
+        chain_id=cfg.polymarket.chain_id,
+        funder_hint=getattr(args, "funder", "") or "",
+        offline=offline,
+    )
+    return cfg, report
+
+
+def _print_wallet(report) -> None:
+    print(f"signer      : {report.signer_address}")
+    if not report.reachable:
+        print(f"venue       : not contacted")
+        if report.note:
+            print(f"note        : {report.note}")
+        return
+    kind = report.account_label or wallet_kind(report.signature_type)
+    print(f"account     : signature_type {report.signature_type} — {kind}")
+    if report.funder_address:
+        print(f"funder      : {report.funder_address}  (holds the USDC)")
+    else:
+        print(f"funder      : (the signer itself)")
+    print(f"USDC        : {report.balance:,.2f}")
+    if report.note:
+        print(f"note        : {report.note}")
+
+
+def wallet_kind(sig: int) -> str:
+    from .wallet_setup import ACCOUNT_KINDS
+    return ACCOUNT_KINDS.get(sig, str(sig))
+
+
+def cmd_wallet_check(args) -> int:
+    """Read-only: identify the wallet and report. Changes nothing."""
+    from .wallet_setup import WalletSetupError
+
+    try:
+        _cfg, report = _wallet_report(args, offline=bool(args.offline))
+    except WalletSetupError as exc:
+        print(f"\n{exc}")
+        return 2
+    _print_wallet(report)
+    if args.json:
+        import json
+        print(json.dumps(report.as_dict(), indent=2))
+    return 0
+
+
+def cmd_wallet_connect(args) -> int:
+    """Identify the wallet, then persist the two non-secret fields to config."""
+    from .wallet_setup import WalletSetupError, apply_to_config
+
+    try:
+        cfg, report = _wallet_report(args, offline=False)
+    except WalletSetupError as exc:
+        print(f"\n{exc}")
+        return 2
+
+    _print_wallet(report)
+
+    if not report.configured:
+        print("\nNothing written — the account could not be identified.")
+        return 2
+
+    if report.balance <= 0 and not args.force:
+        print("\nNothing written — no USDC was found, so this configuration is "
+              "unproven.\nRe-run with --funder <your Polymarket address>, or "
+              "--force to write it anyway.")
+        return 1
+
+    changed = apply_to_config(Path(cfg.source_path), report)
+    if changed:
+        print(f"\nwrote to {cfg.source_path}:")
+        for c in changed:
+            print(f"  {c}")
+    else:
+        print("\nConfig already matches — nothing to change.")
+
+    live = "LIVE" if cfg.mode.live else "dry-run"
+    print(f"\nmode is still {live} — connecting a wallet does not enable trading.")
+    print("The private key is NOT in the config. Put it in the environment:")
+    print("  PQB_PRIVATE_KEY=0x...      (a .env file beside the project works)")
+    return 0
+
+
 def cmd_check(args) -> int:
     cfg = _load(args)
     print(f"config      : {cfg.source_path}")
@@ -1219,6 +1318,35 @@ def cmd_forensics(args) -> int:
     return 0 if data.get("available") else 1
 
 
+def cmd_consistency(args) -> int:
+    """The consistency / loss-minimisation study (surgical patch v2).
+
+    Read-only, like `forensics`. It measures how much room a winner needs,
+    replays candidate loss-control rules against the captured price history,
+    walk-forwards them, and says for each one whether it may leave shadow mode
+    — which is a human action taken on this output, not something this command
+    can do to a running bot.
+    """
+    cfg = _load(args)
+    from .analytics import consistency_research
+
+    data = consistency_research.report(
+        cfg.data_dir / "journal.sqlite3",
+        cfg.intel_path if getattr(cfg, "intel_path", None) else "",
+        config=cfg,
+        starting_balance=float(cfg.mode.paper_starting_balance or 0.0))
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2, default=str))
+        return 0 if data.get("available") else 1
+    print(consistency_research.render(data))
+    if getattr(args, "write", False) and data.get("available"):
+        out = cfg.data_dir / "consistency.json"
+        out.write_text(json.dumps(data, indent=2, default=str),
+                       encoding="utf-8")
+        print(f"\nwritten: {out}")
+    return 0 if data.get("available") else 1
+
+
 def cmd_attribution(args) -> int:
     """Where profit is gained and leaked - evidence, not speculation."""
     cfg = _load(args)
@@ -2377,6 +2505,40 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Print the resolved config (secrets redacted).")
     check.set_defaults(func=cmd_check)
 
+    # --- wallet -------------------------------------------------------------
+    # The key is never a command-line argument: argv is world-readable in the
+    # process list and every shell records it. --key-file, PQB_PRIVATE_KEY or
+    # an unechoed prompt only.
+    wconnect = subs.add_parser(
+        "wallet-connect",
+        help="Connect a MetaMask/EOA wallet: detect how it is configured, "
+             "check its USDC, and save the two non-secret settings. Does NOT "
+             "enable live trading and never stores the private key.")
+    wconnect.add_argument("--key-file", default="",
+                          help="File holding the private key. Otherwise "
+                               "PQB_PRIVATE_KEY, otherwise a hidden prompt.")
+    wconnect.add_argument("--funder", default="",
+                          help="Your Polymarket deposit address, if the USDC "
+                               "sits in a Polymarket proxy wallet.")
+    wconnect.add_argument("--no-prompt", action="store_true",
+                          help="Never prompt; fail instead. For scripts.")
+    wconnect.add_argument("--force", action="store_true",
+                          help="Write the config even if no USDC was found.")
+    wconnect.set_defaults(func=cmd_wallet_connect)
+
+    wcheck = subs.add_parser(
+        "wallet-check",
+        help="Read-only: report which account a key controls and its USDC. "
+             "Writes nothing.")
+    wcheck.add_argument("--key-file", default="")
+    wcheck.add_argument("--funder", default="")
+    wcheck.add_argument("--no-prompt", action="store_true")
+    wcheck.add_argument("--offline", action="store_true",
+                        help="Validate the key and derive its address without "
+                             "contacting Polymarket.")
+    wcheck.add_argument("--json", action="store_true")
+    wcheck.set_defaults(func=cmd_wallet_check)
+
     run = subs.add_parser("run", help="Run the evaluation loop.")
     run.add_argument("--dry-run", action="store_true",
                      help="Force dry-run regardless of the config.")
@@ -2662,6 +2824,18 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Also write state/forensics.json.")
     forensics_cmd.set_defaults(func=cmd_forensics)
 
+    consistency_cmd = subs.add_parser(
+        "consistency",
+        help="The consistency / loss-minimisation study: how much room a "
+             "winner needs, which loss-control rules survive walk-forward "
+             "validation, and what the shadow layer would have done. "
+             "Read-only; promotes nothing.")
+    consistency_cmd.add_argument("--json", action="store_true",
+                                 help="Emit the full study as JSON.")
+    consistency_cmd.add_argument("--write", action="store_true",
+                                 help="Also write state/consistency.json.")
+    consistency_cmd.set_defaults(func=cmd_consistency)
+
     attribution = subs.add_parser(
         "attribution",
         help="Where profit is gained and leaked: price/hold/TTR buckets, "
@@ -2693,6 +2867,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A Windows console is cp1252, and several messages in this project (and in
+    # py-clob-client) contain characters it cannot encode -- an em dash, an
+    # arrow. Writing one raises UnicodeEncodeError and takes down the command
+    # *instead of* showing the error it was trying to report, which is the
+    # worst possible moment to lose the message. Degrading to '?' keeps the
+    # text readable and the process alive; it never changes what is computed.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):  # not a reconfigurable stream
+            pass
+
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

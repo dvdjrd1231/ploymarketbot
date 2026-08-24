@@ -24,6 +24,7 @@ from collections import defaultdict
 from dataclasses import replace
 
 from .backtest import run
+from .baseline import wallet_alpha
 from .config import Settings
 from .data import PriceTape, wallet_trade_counts
 from .registry import Registry
@@ -136,10 +137,14 @@ def discover(
         f"BH threshold p<={bh_threshold:.5f} at FDR={fdr} -> {n_sig} significant")
 
     # ---------------------------------------------------------------- stage 4
-    log("[5/5] robustness and cross-wallet generalisation ...")
+    log("[5/5] population control, robustness and cross-wallet generalisation ...")
     validated = []
+    status_counts: dict[str, int] = {}
     for v in validations:
         if v.oos_p() <= bh_threshold and bh_threshold > 0:
+            # §46 control first — it is the cheapest test and the most decisive.
+            a, pop = wallet_alpha(st, v.strategy, v.test)
+            v.alpha, v.population = a, pop.as_dict()
             v.robustness = robustness(v.strategy, v.test, obs_by_wallet[v.strategy.wallet], st, tape)
             # §9: does the same transformation work on wallets that did not
             # produce it?
@@ -155,6 +160,7 @@ def discover(
                     v.cross_wallet.append((other, r))
 
         status = v.status(bh_threshold if bh_threshold > 0 else 0.0)
+        status_counts[status] = status_counts.get(status, 0) + 1
         if registry:
             registry.record(
                 v.strategy, status, v.score(), v.oos_p(),
@@ -179,6 +185,7 @@ def discover(
         "bh_threshold": bh_threshold,
         "fdr": fdr,
         "validated": len(validated),
+        "status_counts": status_counts,
         "baselines": baselines,
         "top": [
             {
@@ -187,6 +194,8 @@ def discover(
                 "spec": v.strategy.spec(),
                 "score": v.score(),
                 "oos_p": v.oos_p(),
+                "alpha": round(v.alpha, 5),
+                "population": v.population,
                 "test": v.test.summary(),
                 "walk_consistency": v.walk_consistency(),
                 "cross_wallet_consistency": v.cross_wallet_consistency(),

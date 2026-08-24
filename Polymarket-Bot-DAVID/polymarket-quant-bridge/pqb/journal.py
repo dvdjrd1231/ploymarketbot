@@ -109,7 +109,35 @@ CREATE TABLE IF NOT EXISTS lifecycles (
     liquidity_bucket TEXT,
     ttr_bucket    TEXT,
     wallet_influence TEXT,
-    mode          TEXT
+    mode          TEXT,
+    thesis_state  TEXT DEFAULT '',
+    thesis_streak INTEGER DEFAULT 0,
+    thesis_ts     REAL DEFAULT 0
+);
+
+-- LAYER 2 (pqb.consistency), Module 20. One row the FIRST time the safety
+-- layer would have exited a position, whatever mode it is in. Write-once per
+-- (lifecycle, style) so the row records the moment of the hypothetical exit
+-- rather than the last cycle it was still true — which is what makes
+-- "hypothetical P&L vs what actually happened afterwards" answerable at all.
+CREATE TABLE IF NOT EXISTS consistency_shadow (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts            REAL NOT NULL,
+    lifecycle_id  INTEGER,
+    token_id      TEXT,
+    style         TEXT,
+    reason        TEXT,
+    health        TEXT,
+    streak        INTEGER DEFAULT 0,
+    enforced      INTEGER DEFAULT 0,
+    price         REAL DEFAULT 0,
+    return_pct    REAL DEFAULT 0,
+    unrealized    REAL DEFAULT 0,
+    mfe           REAL DEFAULT 0,
+    mae           REAL DEFAULT 0,
+    held_seconds  REAL DEFAULT 0,
+    detail        TEXT,
+    UNIQUE(lifecycle_id, style)
 );
 
 CREATE TABLE IF NOT EXISTS reconciliations (
@@ -177,7 +205,49 @@ class Journal:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a journal was first created.
+
+        ``CREATE TABLE IF NOT EXISTS`` does nothing to a table that already
+        exists, so the three ``thesis_*`` columns added for Layer 2 would be
+        invisible to every existing install and each write would fail with
+        "no such column" — on the position-management path, in a thread, while
+        the bot otherwise looked healthy. Same construction as
+        :meth:`pqb.analytics.store.IntelStore._migrate`: the wanted columns are
+        derived from the schema text above, so adding one there is all that is
+        ever needed, for new installs and upgrades both.
+        """
+        import re
+
+        for table in ("lifecycles", "decisions", "executions", "cycles"):
+            block = re.search(
+                rf"CREATE TABLE IF NOT EXISTS {table} \((.*?)\n\);",
+                _SCHEMA, re.S)
+            if not block:
+                continue
+            wanted: dict[str, str] = {}
+            for line in block.group(1).splitlines():
+                # Strip inline comments BEFORE parsing: a trailing `-- note`
+                # would otherwise swallow the statement terminator and SQLite
+                # rejects the whole ALTER with "incomplete input".
+                line = line.split("--")[0].strip().rstrip(",")
+                if not line or line.upper().startswith(
+                        ("PRIMARY", "UNIQUE", "FOREIGN", "CHECK")):
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    wanted[parts[0]] = " ".join(parts[1:])
+            have = {r[1] for r in self._conn.execute(
+                f"PRAGMA table_info({table})")}
+            if not have:
+                continue
+            for column, decl in wanted.items():
+                if column not in have:
+                    self._conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     def close(self) -> None:
         with self._lock:
@@ -326,6 +396,114 @@ class Journal:
                 (peak, trough, max_pnl, min_pnl, position.lifecycle_id),
             )
             self._conn.commit()
+
+    # -- Layer 2 (pqb.consistency) -------------------------------------------
+
+    def record_thesis(self, lifecycle_id: Optional[int], state: str,
+                      streak: int) -> None:
+        """Persist the thesis-health reading so the confirmation streak
+        survives a cycle boundary and a restart.
+
+        The engine is stateless by contract, and "INVALIDATED for three
+        consecutive readings" is a statement about a position's history — so
+        the history lives here with the rest of the position's path, exactly
+        as `peak_price` and `reduced_count` already do. Persisted rather than
+        held in memory for the same reason peak equity is: a process bounce
+        must not silently reset a confirmation count to zero, because that is
+        precisely the moment the reading matters.
+
+        Written only when it CHANGES, so this stays a rare write despite being
+        called for every position every cycle.
+        """
+        if lifecycle_id is None:
+            return
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT thesis_state, thesis_streak FROM lifecycles "
+                "WHERE id = ?", (int(lifecycle_id),)).fetchone()
+            if row is None:
+                return
+            if (row["thesis_state"] or "") == state \
+                    and int(row["thesis_streak"] or 0) == int(streak):
+                return
+            self._conn.execute(
+                "UPDATE lifecycles SET thesis_state=?, thesis_streak=?, "
+                "thesis_ts=? WHERE id=?",
+                (state, int(streak), time.time(), int(lifecycle_id)))
+            self._conn.commit()
+
+    def record_consistency(self, lifecycle_id: Optional[int], token_id: str,
+                           verdict: dict) -> None:
+        """Record the FIRST time Layer 2 would have exited this position.
+
+        Takes the verdict as the plain dict the engine already put on the
+        decision's rationale, so the journal depends on no type from the
+        consistency layer and the layer needs no journal.
+
+        ``INSERT OR IGNORE`` against the ``UNIQUE(lifecycle_id, style)`` key,
+        so the row is the moment of the hypothetical exit and a later cycle
+        cannot overwrite it with a staler-but-newer one. Module 20 compares
+        this row against what the trade actually went on to do, and that
+        comparison only means anything if the recorded price is the price the
+        proposed exit would have happened at.
+        """
+        if not lifecycle_id or not verdict or not verdict.get("triggered"):
+            return
+        state = verdict.get("state") or {}
+        with self._lock:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO consistency_shadow(
+                     ts, lifecycle_id, token_id, style, reason, health, streak,
+                     enforced, price, return_pct, unrealized, mfe, mae,
+                     held_seconds, detail)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    time.time(), int(lifecycle_id), str(token_id or ""),
+                    str(verdict.get("style") or ""),
+                    str(verdict.get("reason") or ""),
+                    str(verdict.get("health") or ""),
+                    int(verdict.get("streak") or 0),
+                    1 if verdict.get("enforced") else 0,
+                    float(state.get("price") or 0.0),
+                    float(state.get("returnPct") or 0.0),
+                    float(state.get("unrealized") or state.get("unrealizedUsdc")
+                          or 0.0),
+                    float(state.get("mfe") or 0.0),
+                    float(state.get("mae") or 0.0),
+                    float(state.get("heldSeconds") or 0.0),
+                    _json(verdict),
+                ))
+            self._conn.commit()
+
+    def entry_decision(self, decision_id: Optional[int]) -> Optional[dict]:
+        """The decision that opened a position, with its rationale parsed.
+
+        Layer 2 checks today's market against what the ENTRY recorded, so it
+        needs the entry row and not a recomputation. Read back rather than
+        cached in the lifecycle because the rationale is already stored once
+        and a second copy would be a second thing that can disagree.
+        """
+        if not decision_id:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT rationale, features, wallet_influence FROM decisions "
+                "WHERE id = ?", (int(decision_id),)).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        for key in ("rationale", "features"):
+            try:
+                out[key] = json.loads(out.get(key) or "{}") or {}
+            except (TypeError, ValueError):
+                out[key] = {}
+        return out
+
+    def consistency_rows(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM consistency_shadow ORDER BY ts").fetchall()
+        return [dict(r) for r in rows]
 
     def record_reduction(self, lifecycle_id: int, size: float,
                          price: float, pnl: float) -> None:

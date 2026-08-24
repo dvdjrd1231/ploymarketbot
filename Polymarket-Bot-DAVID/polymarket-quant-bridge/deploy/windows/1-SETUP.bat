@@ -134,6 +134,14 @@ if not exist "config\config.yaml" (
 ) else (
   echo  [OK] Settings file already exists - left untouched.
 )
+
+rem The example ships a self-contained layout with the databases inside this
+rem folder. If a Polymarket-Bot-DATA folder was supplied alongside, point the
+rem config at it instead - otherwise the bot silently starts against an empty
+rem database and ignores the collected history. Only rewrites values still at
+rem the template default, so an edited config is never touched.
+"%VPY%" "deploy\windows\_configure_paths.py"
+
 if not exist "state" mkdir "state"
 
 rem --- 5. verify ------------------------------------------------------

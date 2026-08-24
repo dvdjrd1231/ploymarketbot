@@ -56,6 +56,46 @@ class ExposureView:
 
 
 @dataclass
+class GuardState:
+    """Latched state for the session guards. Persisted by the runner.
+
+    The existing caps are stateless: they read the account and decide. The two
+    guards added by the surgical risk patch cannot be, for opposite reasons.
+
+    * The equity-peak guard needs HYSTERESIS. A bare threshold at 5% flips to
+      blocked at 5.01% and back to clear at 4.99%, which on a live equity curve
+      means it chatters every cycle and logs a transition each time. So the
+      guard latches: it arms at `peak_guard_threshold` and only releases at
+      `peak_guard_recovery`, and between the two it holds whatever it already
+      was.
+
+    * The loss-cascade guard needs a DEADLINE, because "pause for 30 minutes"
+      is not a function of the current account state at all.
+
+    Persisted rather than recomputed for the same reason peak equity is: a
+    restart must not silently release a guard, and a process bounce is exactly
+    when that would be most damaging.
+    """
+
+    equity_guard_active: bool = False
+    cascade_pause_until: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "equityGuardActive": bool(self.equity_guard_active),
+            "cascadePauseUntil": float(self.cascade_pause_until),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[dict]) -> "GuardState":
+        data = data or {}
+        return cls(
+            equity_guard_active=bool(data.get("equityGuardActive", False)),
+            cascade_pause_until=float(data.get("cascadePauseUntil", 0.0) or 0.0),
+        )
+
+
+@dataclass
 class PolicyVerdict:
     """What the policy decided, and why — in the operator's words.
 
@@ -73,9 +113,26 @@ class PolicyVerdict:
     largest_cluster_value: float = 0.0
     drawdown_pct: float = 0.0
 
+    # --- surgical risk patch -------------------------------------------------
+    # `shadow_block_reason` carries what the NEW guards WOULD have blocked when
+    # running in shadow mode. It is deliberately a separate field: the whole
+    # point of shadow mode is that `blocked` stays false, so writing the reason
+    # into `block_reason` would defeat it. Kept populated in enforce mode too,
+    # so the two modes log identically and can be compared directly.
+    shadow_block_reason: str = ""
+    equity_guard_active: bool = False
+    cascade_active: bool = False
+    peak_equity: float = 0.0
+    max_new_position_usdc: float = 0.0   # 0 = no ceiling from this policy
+
     @property
     def blocked(self) -> bool:
         return bool(self.block_reason)
+
+    @property
+    def would_block(self) -> bool:
+        """True when a guard fired, whether or not it was enforced."""
+        return bool(self.block_reason or self.shadow_block_reason)
 
     def to_dict(self) -> dict:
         return {
@@ -88,6 +145,11 @@ class PolicyVerdict:
             "largestCluster": self.largest_cluster,
             "largestClusterValue": round(self.largest_cluster_value, 4),
             "drawdownPct": round(self.drawdown_pct, 4),
+            "shadowBlockReason": self.shadow_block_reason,
+            "equityGuardActive": bool(self.equity_guard_active),
+            "cascadeActive": bool(self.cascade_active),
+            "peakEquity": round(self.peak_equity, 4),
+            "maxNewPositionUsdc": round(self.max_new_position_usdc, 4),
         }
 
 
@@ -130,14 +192,114 @@ def category_exposure(positions: Iterable[ExposureView]) -> dict[str, float]:
     return out
 
 
+def equity_guard(cfg, drawdown: float, was_active: bool) -> tuple[bool, str]:
+    """The latching equity-peak guard (patches 1-3). Pure; caller holds state.
+
+    Returns ``(active_now, transition)`` where transition is ``""``, ``"armed"``
+    or ``"recovered"`` — the caller logs it, this does not.
+
+    The two thresholds are deliberately different values. Arming at 5% and
+    releasing at 5% is one threshold wearing two names, and it produces a guard
+    that toggles on every tick that straddles it. Arming at 5% and releasing at
+    2% means the account has to actually recover something before entries
+    resume, and the 3-point band in between is where nothing changes.
+    """
+    if not getattr(cfg, "peak_guard_enabled", False):
+        return False, ""
+
+    arm_at = float(getattr(cfg, "peak_guard_threshold", 0.0) or 0.0)
+    release_at = float(getattr(cfg, "peak_guard_recovery", 0.0) or 0.0)
+    if arm_at <= 0:
+        return False, ""
+    # A recovery threshold at or above the arm threshold would release the
+    # guard in the same breath that armed it. Clamp rather than trust config.
+    release_at = min(release_at, arm_at * 0.5)
+
+    if was_active:
+        if drawdown <= release_at:
+            return False, "recovered"
+        return True, ""
+    if drawdown >= arm_at:
+        return True, "armed"
+    return False, ""
+
+
+def cascade_guard(cfg, realised_losses: int, now_ts: float,
+                  pause_until: float) -> tuple[bool, float, str]:
+    """The loss-cascade pause (patch 8). Pure; caller holds state and counts.
+
+    Returns ``(active_now, new_pause_until, transition)``.
+
+    Note what this is NOT, because this module's contract says there is "no
+    term for recent losses" and this adds one. The distinction that keeps that
+    promise intact: this can only ever PAUSE new entries for a fixed period. It
+    never changes a stake, never sizes up after a loss, and never touches an
+    exit — so it cannot become a martingale or a revenge trade. Pausing after
+    losses is the opposite of chasing them.
+
+    Only REALISED losses count. Counting unrealised ones would make the guard
+    fire on the same mark-to-market wobble the stop already governs, and would
+    pause entries every time an open position was briefly underwater.
+    """
+    if not getattr(cfg, "cascade_guard_enabled", False):
+        return False, 0.0, ""
+
+    if pause_until > 0 and now_ts < pause_until:
+        return True, pause_until, ""
+    if pause_until > 0 and now_ts >= pause_until:
+        return False, 0.0, "released"
+
+    count = int(getattr(cfg, "cascade_loss_count", 0) or 0)
+    minutes = float(getattr(cfg, "cascade_pause_minutes", 0.0) or 0.0)
+    if count <= 0 or minutes <= 0:
+        return False, 0.0, ""
+    if realised_losses >= count:
+        return True, now_ts + minutes * 60.0, "armed"
+    return False, 0.0, ""
+
+
+def max_new_position(cfg, equity: float, stop_loss_pct: float) -> float:
+    """Ceiling on a NEW position's stake, from the single-position loss cap.
+
+    Patch 4. This does not close anything and does not replace the stop; it
+    only bounds how much a *new* position may risk, expressed in the money the
+    engine is about to spend.
+
+        worst-case loss = stake x stop_loss_pct
+        stake_ceiling   = equity x max_single_loss_pct / stop_loss_pct
+
+    Measured against this build: `max_position_fraction` 0.25 and
+    `stop_loss_pct` 0.25 give a worst case of 6.25% of equity. A cap set below
+    that WILL bind on ordinary trades and shrink them — at 0.05 it holds the
+    stake to 20% of equity instead of 25%. That is a real change to sizing, so
+    it is configurable, reported in the A/B, and 0 disables it entirely.
+    """
+    if not getattr(cfg, "single_loss_cap_enabled", False):
+        return 0.0
+    cap = float(getattr(cfg, "max_single_position_loss_pct", 0.0) or 0.0)
+    if cap <= 0 or equity <= 0 or stop_loss_pct <= 0:
+        return 0.0
+    return equity * cap / float(stop_loss_pct)
+
+
 def evaluate(cfg, equity: float, cash: float,
              positions: Iterable[ExposureView],
-             peak_equity: float = 0.0) -> PolicyVerdict:
+             peak_equity: float = 0.0,
+             state: Optional[GuardState] = None,
+             realised_losses: int = 0,
+             now_ts: float = 0.0,
+             stop_loss_pct: float = 0.0) -> PolicyVerdict:
     """The whole policy, as one pure function.
 
     `cfg` is a :class:`CapitalPreservationConfig`. Disabled returns a verdict
     that blocks nothing and scales nothing, so an install that has not opted
     in behaves exactly as it did before.
+
+    The `state`, `realised_losses`, `now_ts` and `stop_loss_pct` arguments were
+    added by the surgical risk patch and all default to values that make the
+    new guards inert. An existing caller that does not pass them gets exactly
+    the verdict it got before the patch — which is the property the A/B
+    comparison rests on.
     """
     verdict = PolicyVerdict()
     if not getattr(cfg, "enabled", False):
@@ -156,6 +318,7 @@ def evaluate(cfg, equity: float, cash: float,
     peak = max(float(peak_equity or 0.0), equity)
     drawdown = ((peak - equity) / peak) if peak > 0 else 0.0
     verdict.drawdown_pct = drawdown
+    verdict.peak_equity = peak
 
     # -- 1. the cash reserve. A floor under the account, not a target -------
     reserve = equity * max(0.0, float(cfg.min_cash_reserve_fraction))
@@ -201,7 +364,66 @@ def evaluate(cfg, equity: float, cash: float,
 
     # -- 5. sizing. Shrink only, never grow --------------------------------
     verdict.scale = size_scale(cfg, drawdown, verdict.reasons)
+
+    # -- 6. the surgical risk patch ----------------------------------------
+    # Deliberately placed AFTER everything above. Every existing cap keeps its
+    # position in the order and its exact behaviour; these guards can only add
+    # a block that was not already there, never remove one. If a cap above
+    # returned early, none of this runs and the verdict is byte-identical to
+    # what the previous build produced.
+    _apply_patch_guards(cfg, verdict, drawdown, state, realised_losses,
+                        now_ts, equity, stop_loss_pct)
     return verdict
+
+
+def _apply_patch_guards(cfg, verdict: PolicyVerdict, drawdown: float,
+                        state: Optional[GuardState], realised_losses: int,
+                        now_ts: float, equity: float,
+                        stop_loss_pct: float) -> None:
+    """Equity-peak guard, loss-cascade guard and the new-position ceiling.
+
+    Mutates `verdict` in place. Honours shadow mode: in `"shadow"` the reason
+    is recorded but `block_reason` is left empty, so the engine behaves exactly
+    as the unpatched build while the guard's opinion is still logged.
+    """
+    state = state or GuardState()
+    enforce = str(getattr(cfg, "guard_mode", "enforce")).lower() != "shadow"
+    reasons: list[str] = []
+
+    active, transition = equity_guard(cfg, drawdown, state.equity_guard_active)
+    state.equity_guard_active = active
+    verdict.equity_guard_active = active
+    if transition:
+        verdict.reasons.append(f"equity guard {transition}")
+    if active:
+        reasons.append(
+            f"equity guard: {drawdown:.2%} below the session peak of "
+            f"${verdict.peak_equity:,.2f}, at or beyond the "
+            f"{float(getattr(cfg, 'peak_guard_threshold', 0)):.0%} pause. "
+            "New entries only; existing positions are managed and exited by "
+            "the unchanged strategy.")
+
+    cascade_on, until, cascade_transition = cascade_guard(
+        cfg, realised_losses, now_ts, state.cascade_pause_until)
+    state.cascade_pause_until = until
+    verdict.cascade_active = cascade_on
+    if cascade_transition:
+        verdict.reasons.append(f"loss cascade {cascade_transition}")
+    if cascade_on:
+        left = max(0.0, (until - now_ts) / 60.0)
+        reasons.append(
+            f"loss cascade: {realised_losses} realised losses inside the "
+            f"window; new entries paused for another {left:.0f} min. "
+            "Exits are unaffected.")
+
+    verdict.max_new_position_usdc = max_new_position(cfg, equity, stop_loss_pct)
+
+    if not reasons:
+        return
+    joined = " | ".join(reasons)
+    verdict.shadow_block_reason = joined
+    if enforce:
+        verdict.block_reason = joined
 
 
 def size_scale(cfg, drawdown: float, reasons: Optional[list] = None) -> float:
