@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+var/
+var2/
+.pytest_cache/
+rust/target/

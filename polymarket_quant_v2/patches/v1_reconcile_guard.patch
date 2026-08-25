@@ -1,0 +1,124 @@
+Reconciliation exit safety — minimal change for the existing engine
+===================================================================
+
+SUPPLIED FOR REVIEW. NOT APPLIED.
+
+The standing rule is that the original installation is never modified, so this
+diff is shipped rather than executed. Apply it deliberately, after reading it.
+
+Target: polymarket-quant-bridge/pqb/reconcile.py
+
+What it changes: the loop at lines 121-153 stops closing a lifecycle on a
+single absence from one snapshot. Instead it requires either authoritative
+evidence (market resolved / confirmed exit fill / observed zero balance) or
+N corroborating absences across separate cycles from a healthy source.
+
+What it does NOT change: entry logic, sizing, compounding, filters, thresholds,
+wallet logic, the adoption path, the resize path, the balance check, or the
+halt behaviour.
+
+-------------------------------------------------------------------------------
+--- a/pqb/reconcile.py
++++ b/pqb/reconcile.py
+@@
+ import time
++from pqv2.reconciliation import (PositionEvidence, ReconciliationGuard,
++                                 Resolution)
+ 
+@@ class Reconciler.__init__
+         self.last_run: float = 0.0
+         self.last_result: Optional[ReconcileResult] = None
++        # Cross-cycle verification. A position must be observed missing more
++        # than once, from a healthy source, before reconciliation may close it.
++        self._guard = ReconciliationGuard(
++            required_confirmations=getattr(
++                config.reconciliation, "missing_confirmations", 3),
++            max_attempts=getattr(
++                config.reconciliation, "missing_max_attempts", 12),
++            min_seconds_between_attempts=max(
++                30.0, getattr(config.reconciliation, "interval_seconds", 30)))
+ 
+@@ async def run(self, mark_for)
+         actual = await self._actual_positions(live)
++        # An empty snapshot while positions are held is far more likely to be
++        # a broken source than an empty book. Recorded so the guard can weigh
++        # the absence rather than trust it.
++        source_healthy = not (len(actual) == 0 and len(lifecycles) > 0)
+ 
+@@ the "position.missing" branch
+             if grace and now - (row["entry_ts"] or 0) < grace:
+                 result.skipped_young += 1
+                 continue
++
++            # --- verification gate --------------------------------------
++            evidence = PositionEvidence(
++                token_id=token_id,
++                local_size=row["entry_size"] or 0.0,
++                local_entry_ts=row["entry_ts"] or 0.0,
++                snapshot_present=False,
++                snapshot_total_positions=len(actual),
++                snapshot_ts=now,
++                last_confirmed_ts=row["entry_ts"] or 0.0,
++                source_healthy=source_healthy,
++                market_resolved=self._market_resolved(token_id),
++            )
++            event = self._guard.observe(evidence, now=now)
++            self.journal.record_reconciliation(
++                "position.missing", token_id,
++                {"size": row["entry_size"]}, None,
++                f"verification: {event.resolution}",
++                {"attempts": event.attempts, "live": live})
++            if not event.closed_position:
++                # HOLD. The position stays open and under monitoring. This is
++                # the whole patch.
++                result.uncertain = getattr(result, "uncertain", 0) + 1
++                self.log.warning(
++                    "Reconciliation: position missing but NOT confirmed gone; "
++                    "holding", token=token_id[:12],
++                    resolution=event.resolution, attempts=event.attempts)
++                continue
++            exit_style = ("settlement"
++                          if event.resolution == Resolution.MARKET_SETTLED.value
++                          else "reconciliation_confirmed")
++            # --- end verification gate ----------------------------------
++
+             entry_price = row["entry_price"] or 0.0
+@@
+             self.journal.close_lifecycle(
+                 lifecycle_id=row["id"], exit_price=mark, exit_size=size,
+                 realized_pnl=pnl,
+-                reason="Reconciliation: no longer held on the exchange.",
+-                exit_style="reconciled")
++                reason=("Reconciliation: confirmed no longer held "
++                        f"({event.resolution})."),
++                exit_style=exit_style)
+-------------------------------------------------------------------------------
+
+ALSO REQUIRED — one line, elsewhere:
+
+  pqb/decision/high_confidence.py::_load_setups
+
+  The empirical gate reads every CLOSED lifecycle and scores realized_pnl > 0
+  as a win, so any reconciliation closure teaches it something that was never
+  decided. Add the quarantine:
+
+      WHERE l.status='CLOSED'
+  ->  WHERE l.status='CLOSED'
+        AND COALESCE(l.exit_style,'') NOT IN
+            ('reconciled', 'reconciliation_unverified')
+
+  Historical rows carrying exit_style='reconciled' were written with no
+  verification and must be excluded until each is re-verified.
+
+OPTIONAL, and the complete fix for the root cause:
+
+  pqb/adapters/data_adapter.py::exchange_positions
+
+  Distinguish "the venue reports no positions" from "the call failed / returned
+  nothing". Raising, or returning a sentinel, on a failed call would stop the
+  empty-snapshot case from ever reaching the reconciler.
+
+TEST BEFORE APPLYING:
+
+  cd polymarket_quant_v2 && python -m pytest tests/test_reconciliation.py -q
+  # 32 passed — the corrected behaviour, in isolation, with no V1 dependency

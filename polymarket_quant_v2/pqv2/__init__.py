@@ -1,3 +1,3 @@
-"""Polymarket Quant V2 — separate from, and never writing to, the original."""
+"""Polymarket Quant Engine V2."""
 
-__version__ = "2.0.0-audit"
+__version__ = "2.0.0"
