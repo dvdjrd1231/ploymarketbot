@@ -1,191 +1,185 @@
-# Polymarket Quant Engine V2
+# Polymarket Quant Bridge V3
 
-Wallet-behaviour strategy discovery with the controls that make its output
-interpretable, running **beside** the existing engine rather than replacing it.
+**A rebuild of the V2 installation**, not a second product beside it. One
+directory, one `var/`, one install file, one dashboard.
 
-The original installation under `Polymarket-Bot-DAVID/` is **unchanged,
-recoverable and executable**. V2 opens its databases read-only and writes only
-under `polymarket_quant_v2/var/`. This is enforced by a test, not by
-convention.
+A research-first, continuously learning quantitative intelligence and execution
+system for Polymarket. Python computational core with Rust hot kernels, a local
+URL dashboard in the original Quant Bridge visual language, a **configurable**
+starting bankroll, and live trading disabled until a human authorises it
+against measured evidence.
 
----
-
-## Read this first
-
-**The existing engine's zero-trade problem is not a filter problem.**
-
-All 40,820 decisions it has ever journalled are `DO_NOTHING`, and all 40,820
-carry the same reason — *learning mode: no validated strategy exists*. That
-gate sits above every other entry gate, so the market-state, depth, spread and
-EV filters the brief asks about **were never reached in production**. Loosening
-them would have changed nothing and degraded the engine.
-
-The measured cause is one step further back: the research pipeline validates
-against **78,219 rows / 123 markets / 3.8 days** while **116,923 rows / 1,285
-markets / 90 days** sit in the same database file. It is starved, not
-mis-tuned.
-
-Full derivation with reproducing SQL: [`docs/MAPPING.md`](docs/MAPPING.md).
-What the first pass found: [`docs/FINDINGS.md`](docs/FINDINGS.md).
+**Nothing here has traded real money. No number in this system is a claim of
+profitability.**
 
 ---
 
-## Install and run
+## Install
 
-Python 3.11+. **Standard library only** — no dependencies, nothing to download.
-
-```bash
-cd polymarket_quant_v2
-python -m pytest tests/ -q          # 158 tests, offline, ~5 s
-python -m pqv2 selftest             # checks the real database is reachable
-```
-
-Point it at the data if it is not in the default location:
-
-```bash
-set PQV2_DATA_DB=D:\...\Polymarket-Bot-DATA\state\intel.sqlite3
-set PQV2_WORK_DIR=D:\...\polymarket_quant_v2\var
-```
-
-### The five-minute tour
-
-```bash
-python -m pqv2 inventory      # what evidence actually exists
-python -m pqv2 reconcile      # reconciliation exit safety, before/after
-python -m pqv2 audit          # where Strategy A's opportunities go, and why
-python -m pqv2 gates          # who owns which suppression
-python -m pqv2 rn1            # reconstruct the reference wallet
-python -m pqv2 features       # which features carry information; which are inert
-```
-
-### The full cycle
-
-```bash
-python -m pqv2 discover --max-wallets 40 -v   # discovery + validation
-python -m pqv2 leaderboard                    # what survived
-python -m pqv2 exits                          # settlement vs early exit
-python -m pqv2 expansion                      # the Win Expansion ladder
-python -m pqv2 shadow                         # full pipeline over history
-python -m pqv2 dashboard                      # everything, one screen (text)
-python -m pqv2 gui                            # visual dashboard (or DASHBOARD.vbs)
-python -m pqv2 diagnose                       # the 22 mandatory questions
-```
-
----
-
-## The two routes
+Python 3.11+. **Standard library only** — no dependencies, nothing to
+download, and nothing dials out unless you run `COLLECT.bat`.
 
 ```
-                    POLYMARKET DATA
-                          |
-          +---------------+---------------+
-          |                               |
-     STRATEGY A                      STRATEGY B
-  existing engine                RN1 / wallet engine
-  own filters, own ladder        own filters, own ladder
-          |                               |
-          +---------------+---------------+
-                          |
-                 PORTFOLIO / RISK LAYER
-                          |
-                      EXECUTION
+double-click  INSTALL.bat        install check, full research pass, dashboard
+double-click  DASHBOARD.vbs      live dashboard at http://127.0.0.1:8787/
+double-click  COLLECT.bat        start live capture (the ONLY networked file)
+double-click  STOP-DASHBOARD.bat stop the background server
 ```
 
-**Strategy B never passes through Strategy A's gates.** Every rule that can
-stop a trade is registered with an owner, and `SignalRecord.reject()` raises if
-a Strategy A gate is evaluated on route B. `tests/test_isolation.py` asserts
-the raise fires and that `strategy_b/` imports nothing from `strategy_a/`.
+### Your bankroll is configured, never assumed
 
-Only `GLOBAL_SAFETY` gates bind both routes, and each must carry written
-evidence — a global gate without evidence is a Strategy A gate in disguise, and
-the test suite fails the build if one appears.
+$100 is the default because it was specified, not because the system believes
+anything about it. Change it in any of three ways:
 
----
-
-## The four controls that make results interpretable
-
-**1. Wallet alpha.** This dataset has a large favourite–longshot bias
-(**+8.8 points at 0.60–0.70**, **+8.9 at 0.70–0.80**, measured over all 116,923
-settled trades). So "buy between 0.6 and 0.9" earns ~+20% expectancy while
-copying nobody. Every candidate is scored against the same price band and week
-across all *other* wallets. Zero alpha ⇒ `NO_WALLET_ALPHA`, cannot promote,
-regardless of profit. **This control exists nowhere in the V1 engine** — without
-it, a price-band search across 40 wallets reports 40 "independent validated
-strategies" that are all the same market-wide effect.
-
-**2. The denominator is always reported.** A sweep tests 5,184 transformations
-per wallet. Promotion is gated on a Benjamini–Hochberg threshold computed over
-the *whole pass*, so a p-value can never be quoted without the search that
-produced it — and choosing the reference wallet from data is charged to that
-budget too.
-
-**3. No look-ahead.** A trade's outcome enters its wallet's statistics at
-`settled_ts`, never at `ts`. Prediction markets pay at resolution, so a win rate
-computed over unresolved trades is information nobody had. Enforced with a heap
-in `substrate/state.py` and asserted by `tests/test_causality.py` — including a
-case a naive implementation would pass.
-
-**4. An unpriceable copy earns nothing.** If no price printed inside the fill
-window, the trade is `UNFILLED` — never filled at the wallet's own price. That
-one line is the difference between a copy backtest and a fiction.
-
----
-
-## Status ladder
-
+```bat
+set PQV3_STARTING_CAPITAL=250     & REM environment, persists for the session
+python -m pqv3 --capital 250 scan & REM per run
 ```
-INSUFFICIENT_EVIDENCE   too few out-of-sample fills or markets
-UNPRICEABLE             fill rate too low to be a real strategy
-FAILED                  negative out-of-sample expectancy
-NOT_SIGNIFICANT         did not clear the pass's BH threshold
-NO_WALLET_ALPHA         real, but it is market structure, not the wallet
-CONCENTRATED            too much profit from one market
-UNSTABLE                positive in under half of walk-forward folds
-FRAGILE                 fails perturbation or block bootstrap
-DRIFT                   random entries in the same pool do as well
-VALIDATED               survived all of the above
-```
+…or edit the one line at the top of `INSTALL.bat`.
 
-`VALIDATED` authorises **paper trading**. Going live is a human decision this
-code never makes. `validation/validate.py` is the only module permitted to
-assign a status, asserted by AST inspection.
+Every risk fraction is a fraction of *equity*, so the model behaves identically
+at $100 and at $100,000. What does **not** scale is the venue's absolute
+minimum order, and that collision is the whole reason `CAPITAL_INFEASIBLE`
+exists as a first-class result. Run `python -m pqv3 capital` to see the sizing
+decision across the whole price curve at your bankroll, including the refusals.
+At $25, for example, it correctly refuses contracts above ~$0.80 rather than
+pretending it can size them.
 
 ---
 
 ## Layout
 
 ```
-pqv2/
-  config.py        every threshold, each owned by a named layer
-  gates.py         who may block what, and the evidence for it
-  ledger.py        every signal, one terminal state, reconciled
-  shadow.py        full pipeline over history, no capital
-  substrate/       causal reconstruction: data, price tape, wallet state
-  strategy_a/      the existing engine, wrapped and never modified
-  strategy_b/      RN1, decomposition, behaviour matching, discovery, engine
-  validation/      backtest, statistics, wallet alpha, ladder, research log
-  risk/            sizing + Win Expansion, compounding, portfolio, execution
-  research/        feature inertness, winner/loser, exits, AI assistant
-  accel/           Rust bridge: enabled / disabled / shadow, Python fallback
-  reconciliation.py exit-safety guard (surgical patch)
-  report/          dashboard, 22-question diagnostic, reconciliation report
-rust/              real, buildable PyO3 crate (not currently needed)
-tests/             158 tests, offline, no database required
-docs/              MAPPING · FINDINGS · LIMITS · PERFORMANCE · RECONCILIATION-PATCH
+pqv2/          the PRESERVED V2 engine — causal substrate, validation ladder,
+               gate ownership, 158 tests. V3 imports it rather than
+               reimplementing it. Unmodified.
+pqv3/          the V3 engine — collectors, point-in-time layer, 25 agents,
+               probability ensemble, capital model, 12 gates, the discovery ->
+               validation pass, learning loop, dashboard server.
+  research/    matrix · hypothesis · sweep · baseline · backtest · walkforward
+               robustness · validate · discover · stats
+  intelligence/ wallet DNA · cross-wallet graph · sequence analysis
+  news/        news -> market causality
+  learning/    loss forensics · counterfactuals · online learning
+  report/      the research report
+tests/         V2 suite; tests/v3/ is the V3 suite. 301 pass together.
+rust/          V2's PyO3 accel crate (unbuilt, not currently needed)
+rust_v3/       V3's PyO3 accel crate  (unbuilt — see ENGINE-PERFORMANCE.md)
+docs/          ENGINE-ARCHITECTURE · ENGINE-LIMITS · ENGINE-PERFORMANCE
+               plus the original V2 docs (MAPPING, FINDINGS, PRIOR-WORK …)
+var/           everything this system writes. Nothing outside it is touched.
 ```
+
+Both engines share one config surface, one database directory and one
+dashboard. `python -m pqv2 <cmd>` still runs every V2 tool exactly as before.
+
+---
+
+## Read this first
+
+Three facts about the available data shape everything. They are properties of
+the evidence, not of the code, and the system reports each rather than hiding
+it.
+
+**1. There is no order-book history, and it cannot be recovered.** Depth,
+spread, partial fills, queue position and market impact for past markets are
+gone. V3 captures them going forward; until enough accumulates, every
+depth-dependent feature is gated and the dashboard says so. This is why
+`UNAVAILABLE` is a first-class state — a zero spread reads as *measured, and
+tight*, and would silently justify an execution gate passing on evidence that
+was never collected.
+
+**2. `resolutions.settled_ts` is 0 in all 8,116 rows.** The moment an outcome
+became public is recorded nowhere. The fallback can only delay information,
+never advance it, so it is safe — but it makes point-in-time wallet track
+record structurally untestable and inflates the multiple-testing penalty
+roughly 12×. `COLLECT.bat` repairs it from the venue; `python -m pqv3
+inventory` reports coverage.
+
+**3. This dataset has a large favourite–longshot bias.** Buying anything in the
+0.60–0.80 band earns roughly +9 points of expectancy while copying nobody at
+all. **Ranking wallets by win rate produces a leaderboard of people who like
+favourites.** Every wallet is scored by `alpha_vs_band` — its return against
+every *other* wallet in the same band and week.
+
+---
+
+## The five controls that make results interpretable
+
+**1. Point-in-time or nothing.** `get_information_state(timestamp, market_id)`
+reconstructs the whole information environment at a timestamp. Every layer is
+bounded by `<= as_of`; news is filtered on *capture* time, not publication
+time. A gate fires if any layer is dated after `as_of` — and it did fire during
+development, catching a real leak in market metadata.
+
+**2. Absent is not zero.** Layers report `OK`, `STALE`, `INSUFFICIENT_HISTORY`,
+`UNAVAILABLE` or `NOT_CONFIGURED`. **A gate that cannot judge fails.** On a
+fresh install ~10 of 25 agents abstain, and the dashboard shows who and why.
+
+**3. The denominator is always reported.** A p-value without the search that
+produced it is uninterpretable, so `STATISTICAL_VALIDITY` refuses any strategy
+whose hypothesis count was not recorded.
+
+**4. The red team is a veto, not a vote.** If an adversarial agent objects with
+conviction, the candidate dies — otherwise a sufficiently enthusiastic majority
+could always outvote it.
+
+**5. Alpha is measured against a price-band-matched baseline.** Returns are
+`(resolution − p)/p`, so a winning longshot pays +19 and a winning favourite
++0.11. Against a raw baseline, any rule that avoids longshots looks
+spectacular — the first run of this system scored `price >= 0.53` at +0.50
+"alpha", which is a price preference anyone can type. Every observation is now
+compared only against others in the same price band and the same week,
+leave-one-out. A rule must ALSO make money in absolute terms: on the real tape
+2,928 rules beat their band while still losing money.
+
+---
+
+## Live trading
+
+`LIVE` cannot be entered by any code path. `pqv3 mode LIVE` is refused. The only
+route is `python -m pqv3 authorize-live --yes`, which prints the measured
+requirements, records which were unmet, and stores the full system snapshot
+alongside your consent. Requesting LIVE without it forces the engine back to
+PAPER and raises an alert.
+
+Credentials live in the OS credential store or an environment variable, never
+in source, logs, the database, an agent prompt or a dashboard payload. The
+secrets module answers presence questions and signs; there is no
+`get_private_key()` to call, and the test suite plants a key then greps every
+API payload and the rendered dashboard for it.
 
 ---
 
 ## Honest scope
 
 - Nothing here has traded real money.
-- `VALIDATED` means *survived historical out-of-sample validation*, not
-  *profitable*.
-- Strategy A has never executed a trade, so V2 neither credits nor blames it.
-  It is preserved as `PRESERVED_UNTRADED` and left alone.
-- Several questions the brief asks **cannot be answered from this data at all**
-  — early exits, depth, partial fills, and point-in-time wallet track record.
-  [`docs/LIMITS.md`](docs/LIMITS.md) says which, why, and what would fix each.
+- The discovery engine runs. A pass over the real tape searched 7,840
+  transformations, screened them against a price-band-matched baseline, and
+  put 15 candidates through walk-forward, a robustness battery and the $100
+  capital test. **Those 15 collapse to 8 distinct findings** — a grid search
+  returns the same effect at several thresholds, and the pass says so.
+- **The $100 capital returns are MODELLED, not measured.** This database's
+  settlement timestamps are degenerate (see limit 2 below), so the simulation
+  uses an assumed 3-day hold. Out-of-sample expectancy is unaffected: it needs
+  only entry price and outcome. Every validated strategy carries this caveat
+  on its own record.
+- `VALIDATED` authorises paper trading. Nothing has been promoted past it.
+- **Neither Rust crate has been compiled** — no toolchain on the build machine.
+  The Python reference kernels are authoritative and fully tested; the Rust
+  equivalence tests skip with a stated reason rather than passing silently.
+  Profiling says don't build them yet: 83% of scan time was SQLite connection
+  setup, and pooling gave a 55× speedup. See `docs/ENGINE-PERFORMANCE.md`.
+- News→market **direction is hardcoded 0.0** by design. Headline sentiment does
+  not tell you which side of a binary market benefits, and a wrong sign is
+  worse than no sign.
+- **Chain events are stored unparsed** — decoding needs the CTF/USDC ABIs.
+  Agent 3 sees counts, not semantics.
+- News, blockchain and order-book layers start empty. They accumulate; they
+  cannot be backfilled.
+
+`docs/ENGINE-LIMITS.md` lists all seven limits, why each exists, and what would
+fix it.
 
 No claim of guaranteed profit is made anywhere in this system, and none should
 be inferred from any number it produces.

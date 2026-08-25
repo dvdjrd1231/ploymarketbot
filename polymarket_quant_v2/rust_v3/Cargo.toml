@@ -1,0 +1,19 @@
+[package]
+name = "pqv3_accel"
+version = "0.1.0"
+edition = "2021"
+description = "CPU-bound kernels for the Polymarket Quant Bridge V3"
+license = "proprietary"
+
+[lib]
+name = "pqv3_accel"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
