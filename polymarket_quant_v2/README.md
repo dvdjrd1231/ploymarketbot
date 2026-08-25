@@ -36,7 +36,7 @@ Python 3.11+. **Standard library only** — no dependencies, nothing to download
 
 ```bash
 cd polymarket_quant_v2
-python -m pytest tests/ -q          # 143 tests, offline, ~5 s
+python -m pytest tests/ -q          # 158 tests, offline, ~5 s
 python -m pqv2 selftest             # checks the real database is reachable
 ```
 
@@ -66,7 +66,8 @@ python -m pqv2 leaderboard                    # what survived
 python -m pqv2 exits                          # settlement vs early exit
 python -m pqv2 expansion                      # the Win Expansion ladder
 python -m pqv2 shadow                         # full pipeline over history
-python -m pqv2 dashboard                      # everything, one screen
+python -m pqv2 dashboard                      # everything, one screen (text)
+python -m pqv2 gui                            # visual dashboard (or DASHBOARD.vbs)
 python -m pqv2 diagnose                       # the 22 mandatory questions
 ```
 
@@ -169,7 +170,7 @@ pqv2/
   reconciliation.py exit-safety guard (surgical patch)
   report/          dashboard, 22-question diagnostic, reconciliation report
 rust/              real, buildable PyO3 crate (not currently needed)
-tests/             143 tests, offline, no database required
+tests/             158 tests, offline, no database required
 docs/              MAPPING · FINDINGS · LIMITS · PERFORMANCE · RECONCILIATION-PATCH
 ```
 

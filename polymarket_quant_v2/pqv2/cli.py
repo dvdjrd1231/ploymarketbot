@@ -425,6 +425,50 @@ def cmd_shadow(args) -> int:
     return 0
 
 
+def cmd_gui(args) -> int:
+    """Render the visual dashboard as a self-contained HTML file."""
+    import time as _time
+    import webbrowser
+    from .report.html_dashboard import write
+    st = _settings(args)
+    reports = st.work_dir / "reports"
+    if not reports.exists() or not any(reports.glob("*.json")):
+        print("No reports yet. Run this first:\n"
+              "  python -m pqv2 discover -v\n"
+              "  python -m pqv2 shadow\n"
+              "or just double-click INSTALL.bat, which does everything.")
+        return 1
+
+    # The favourite-longshot table is a static property of the dataset, and
+    # measuring it is a full scan. Cache it, so double-clicking the launcher
+    # is instant after the first run rather than ten seconds of silence.
+    calibration = None
+    cache = reports / "calibration.json"
+    if not args.no_calibration:
+        if cache.exists() and not args.refresh:
+            try:
+                calibration = json.loads(cache.read_text())
+            except ValueError:
+                calibration = None
+        if calibration is None:
+            try:
+                from .validation.baseline import calibration_table
+                print("measuring the favourite-longshot bias (one DB scan)...")
+                calibration = calibration_table(st)
+                cache.write_text(json.dumps(calibration, indent=2))
+            except Exception as exc:                          # noqa: BLE001
+                print(f"  (skipped: {exc})")
+
+    out = write(reports, st.work_dir / "dashboard.html",
+                calibration=calibration,
+                generated=_time.strftime("generated %Y-%m-%d %H:%M"))
+    print(f"\nwrote {out}")
+    if not args.no_open:
+        webbrowser.open(out.resolve().as_uri())
+        print("opened in your browser")
+    return 0
+
+
 def cmd_dashboard(args) -> int:
     from .report.dashboard import render
     from .strategy_a.adapter import inspect
@@ -600,6 +644,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_shadow)
 
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)
+
+    s = sub.add_parser("gui", help="visual dashboard as an HTML page")
+    s.add_argument("--no-open", action="store_true")
+    s.add_argument("--no-calibration", action="store_true",
+                   help="skip the favourite-longshot scan (faster)")
+    s.add_argument("--refresh", action="store_true",
+                   help="re-measure the favourite-longshot table")
+    s.set_defaults(fn=cmd_gui)
     sub.add_parser("diagnose").set_defaults(fn=cmd_diagnose)
 
     s = sub.add_parser("accel")

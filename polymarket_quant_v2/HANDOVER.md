@@ -30,7 +30,7 @@ and writes only under `polymarket_quant_v2/var/`. This is enforced by a test
 that inspects every `sqlite3.connect` call in the package, not by convention.
 
 - ~7,500 lines of Python, **standard library only** — no dependencies
-- **143 tests**, offline, ~5 seconds, no database required
+- **158 tests**, offline, ~5 seconds, no database required
 - A real, buildable Rust crate (not currently needed — see below)
 - Nine documents under `docs/`, plus a one-click `INSTALL.bat`
 
@@ -46,7 +46,7 @@ Or by hand:
 
 ```bash
 cd polymarket_quant_v2
-python -m pytest tests/ -q       # 143 passed, 3 skipped
+python -m pytest tests/ -q       # 158 passed, 3 skipped
 python -m pqv2 selftest          # confirms the real database is reachable
 ```
 
@@ -58,7 +58,8 @@ python -m pqv2 reconcile --demo  # reconciliation exit safety, before/after
 python -m pqv2 inventory     # how much evidence actually exists
 python -m pqv2 features      # which features are inert, and what that costs
 python -m pqv2 discover -v   # discovery + validation  (~90 s, 40 wallets)
-python -m pqv2 dashboard     # everything on one screen
+python -m pqv2 gui           # visual dashboard (or double-click DASHBOARD.vbs)
+python -m pqv2 dashboard     # the same, as terminal text
 python -m pqv2 diagnose      # the 22 mandatory questions, answered from data
 ```
 

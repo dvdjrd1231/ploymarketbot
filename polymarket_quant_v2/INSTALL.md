@@ -10,13 +10,20 @@ step.
 Unzip so `polymarket_quant_v2/` sits beside `Polymarket-Bot-DAVID/` and
 `Polymarket-Bot-DATA/`, then **double-click `INSTALL.bat`**.
 
+Two files are all you ever need:
+
+| double-click | does |
+|---|---|
+| **`INSTALL.bat`** | checks Python, runs the tests, runs the full research pass, opens the dashboard |
+| **`DASHBOARD.vbs`** | reopens the dashboard later — no console window, opens instantly |
+
 It does all of it, in order, and stops with a clear message if anything is
 wrong:
 
 ```
 [ 1/13 ] Python 3.13.13 OK
 [ 2/13 ] Running the test suite (no database needed)...
-         143 passed, 3 skipped
+         158 passed, 3 skipped
 [ 3/13 ] Checking access to your data...
   [PASS] substrate reachable                       116,923 copyable trades
   [PASS] every global gate carries evidence        []
@@ -33,7 +40,8 @@ wrong:
 [12/13 ] expansion  - Win Expansion ladder and staking modes
 [13/13 ] shadow     - full pipeline replayed over history
 
-  ... DASHBOARD ...
+  ... VISUAL DASHBOARD  -> opens var\dashboard.html in your browser
+  ... DASHBOARD (text) ...
   ... DIAGNOSTIC - the 22 questions ...
 ```
 
@@ -93,7 +101,7 @@ cd polymarket_quant_v2
 python -m pytest tests/ -q
 ```
 
-Expected: **`110 passed, 3 skipped`** in about 5 seconds.
+Expected: **`158 passed, 3 skipped`** in about 5 seconds.
 
 The 3 skips are Rust equivalence tests and are expected — the extension is not
 built. These tests need no database; they run on synthetic fixtures.
@@ -175,7 +183,8 @@ python -m pqv2 winners       # what separates big winners from big losers
 python -m pqv2 exits         # hold to settlement, or exit early?
 python -m pqv2 expansion     # the Win Expansion ladder + staking modes
 python -m pqv2 shadow        # full pipeline replayed over history
-python -m pqv2 dashboard     # everything, one screen
+python -m pqv2 gui           # VISUAL dashboard (or double-click DASHBOARD.vbs)
+python -m pqv2 dashboard     # the same, as terminal text
 python -m pqv2 diagnose      # the 22 mandatory questions, answered
 ```
 
@@ -184,8 +193,8 @@ it will also flag the two already-validated strategies that nothing in your bot
 reads.
 
 `discover` and `shadow` write into `var/`; the rest read what they wrote. Run
-`discover` before `dashboard`, `leaderboard` or `diagnose`, or those will show
-an empty pass.
+`discover` before `gui`, `dashboard`, `leaderboard` or `diagnose`, or those
+will show an empty pass.
 
 ---
 
@@ -224,7 +233,10 @@ polymarket_quant_v2/var/
     ├── strategy_a_audit.json
     ├── feature_audit.json
     ├── winners.json  exits.json  expansion.json  shadow.json
+    ├── reconciliation.json  the exit-safety before/after
     └── diagnostic.json      the 22 answers
+var/dashboard.html           the visual dashboard (open in any browser)
+var/reports/calibration.json cached favourite-longshot table (--refresh to redo)
 ```
 
 All JSON, all safe to delete — re-running regenerates them.

@@ -105,7 +105,17 @@ echo [13/13 ] shadow     - full pipeline replayed over history
 
 echo.
 echo ============================================================
-echo   DASHBOARD
+echo   VISUAL DASHBOARD
+echo ============================================================
+echo Building the HTML dashboard...
+if defined PQV2_NO_PAUSE (
+  %PY% -m pqv2 gui --no-open >> "%LOG%" 2>&1
+) else (
+  %PY% -m pqv2 gui
+)
+echo.
+echo ============================================================
+echo   DASHBOARD ^(text^)
 echo ============================================================
 %PY% -m pqv2 dashboard
 %PY% -m pqv2 dashboard >> "%LOG%" 2>&1
@@ -122,8 +132,12 @@ echo ============================================================
 echo   DONE
 echo ============================================================
 echo.
-echo   Full transcript : %LOG%
-echo   JSON reports    : var\reports\
+echo   Visual dashboard : var\dashboard.html   ^(opened in your browser^)
+echo   Full transcript  : %LOG%
+echo   JSON reports     : var\reports\
+echo.
+echo   To reopen the dashboard later:
+echo     double-click DASHBOARD.vbs   ^(or: python -m pqv2 gui^)
 echo.
 echo   Read next, in this order:
 echo     HANDOVER.md          the whole story, two pages
