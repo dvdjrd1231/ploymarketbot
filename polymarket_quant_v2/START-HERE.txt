@@ -50,6 +50,41 @@ THE STEPS
   5-STOP-DASHBOARD.bat instant   Stops the background dashboard.
 
 
+ASKING IT THINGS
+----------------------------------------------------------
+The dashboard's first page is CHAT. Type an ordinary
+question or an instruction - no commands, no syntax:
+
+    Audit the entire system
+    Why is the news panel empty?
+    What should I do next?
+    Analyse every wallet
+
+Each answer shows the figures it read, where it read them,
+and what it cannot do about the request. It does not need
+an internet connection or an AI subscription: the answers
+are computed from your own data. If you connect a local
+model later it will add a plain-English summary on top -
+it will never supply a number.
+
+It also reads documents. Drag a research note's path into
+the box - or run "pqv3 ingest thatfile.docx" - and it will
+pull out the claims and turn them into things it can
+actually test. Word, Excel, CSV, JSON and plain text all
+work. PDF does not, and it will say so rather than guess.
+Nothing a document claims is believed: each claim becomes
+a candidate that has to survive the same testing as
+everything else.
+
+And it tells you what it noticed on its own - a collector
+that stopped, a loss run getting close to the stop limit -
+at the top of your next answer. Only things worth the
+interruption; the rest is filed under ACTIVITY.
+
+Two things it will not do, and will tell you so:
+edit the program's own files, or place an order.
+
+
 YOUR STARTING BANKROLL
 ----------------------------------------------------------
 $100 is only a default. It is never assumed anywhere in the

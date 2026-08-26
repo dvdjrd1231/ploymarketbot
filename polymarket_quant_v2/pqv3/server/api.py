@@ -461,7 +461,18 @@ class Api:
                          "rather than averaged away")}
 
     def activity(self) -> dict:
-        return {"decisions": self.store.query(
+        return {"discoveries": self.store.query(
+            "SELECT kind, headline, measured, why, action, priority, "
+            "       importance, impact, urgency, surfaced, acked, ts "
+            "  FROM discoveries ORDER BY acked, priority DESC, id DESC "
+            " LIMIT 60"),
+            "discoveries_note": (
+                "§40. Ranked by importance x expected economic impact x "
+                "urgency — three ESTIMATES, bounded 0..1, whose only job is "
+                "to order this queue. Nothing downstream reads them, and no "
+                "gate or sizing decision sees them. Rows below the floor are "
+                "recorded but were never shown"),
+            "decisions": self.store.query(
             "SELECT decision_id, ts, market_id, action, blocking_gate, "
             "       confidence, edge, size_usdc, mode FROM decisions "
             " ORDER BY ts DESC LIMIT 200"),
@@ -533,11 +544,48 @@ class Api:
                      "Freshly installed, most of them are zero and that is the "
                      "accurate answer")}
 
+    def doctrine(self) -> dict:
+        """The operating charter, and the boundary it is held to.
+
+        Rendered as its own page rather than buried in a docstring because §0
+        and §41 only bind anything if a reader can see both halves at once:
+        what the charter instructs, and what this installation can actually
+        do. The second half is probed at request time.
+        """
+        from ..agents import doctrine as doc
+        limit = self.st.agents.llm_context_limit
+        return {"status": doc.status(limit),
+                "sections": [s.to_dict() for s in doc.sections()],
+                "capabilities": doc.capabilities(self.st, self.store,
+                                                 self.engine),
+                "condensed": doc.CONDENSED,
+                "text": doc.charter(),
+                "console_turns": self.store.count("console_turns"),
+                "note": ("the charter is read from docs/MASTER-SYSTEM-PROMPT.md "
+                         "at request time. Editing that file changes what the "
+                         "embedded model is instructed, with no code change")}
+
+    def chat(self, text: str, *, run: str = "", confirm: str = "",
+             narrate: bool = True) -> dict:
+        """One console turn. Not a GET route — see `app.do_POST`."""
+        from ..agents.console import Console
+        c = Console(self.st, self.store, api=self, engine=self.engine)
+        return c.ask(text, run=run, confirm=confirm, narrate=narrate)
+
+    def chat_history(self, limit: int = 50) -> dict:
+        from ..agents.console import Console
+        c = Console(self.st, self.store, api=self, engine=self.engine)
+        rows = c.history(limit)
+        return {"turns": rows, "n": len(rows),
+                "note": self._note(rows, "console history",
+                                   "nothing has been asked yet")}
+
     # ---------------------------------------------------------------- router
     ROUTES = ("overview", "markets", "wallets", "leaderboard", "opportunities",
               "news", "events", "blockchain", "microstructure", "strategies",
               "discovery", "agents", "validation", "backtest", "paper", "live",
-              "portfolio", "risk", "activity", "losses", "learning", "system")
+              "portfolio", "risk", "activity", "losses", "learning", "system",
+              "doctrine")
 
     def get(self, name: str, **kw) -> dict:
         if name == "wallet_detail":

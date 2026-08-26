@@ -66,6 +66,7 @@ class LocalLLM:
     def __init__(self, st: Settings) -> None:
         self.cfg: AgentConfig = st.agents
         self.st = st
+        self.charter_in_force = ""      # 'full' | 'condensed', set by ask()
 
     @property
     def configured(self) -> bool:
@@ -73,8 +74,10 @@ class LocalLLM:
                     and self.cfg.llm_model)
 
     def status(self) -> dict:
+        from . import doctrine
         return {
             "configured": self.configured,
+            "charter": doctrine.status(self.cfg.llm_context_limit),
             "provider": self.cfg.llm_provider or None,
             "endpoint": self.cfg.llm_endpoint or None,
             "model": self.cfg.llm_model or None,
@@ -97,12 +100,16 @@ class LocalLLM:
             return r
 
         import time
-        sys_msg = system or (
-            "You are a research assistant inside a quantitative trading system. "
-            "You explain and summarise evidence that has ALREADY been computed. "
-            "You never estimate probabilities, sizes or thresholds, and you "
-            "never invent market data. If the evidence given to you does not "
-            "support a statement, say so plainly.")
+        # The system message is the charter (docs/MASTER-SYSTEM-PROMPT.md),
+        # scoped to this role. `doctrine.system_prompt` decides between the
+        # verbatim text and the hand-written condensation by measuring both
+        # against the configured context window — a charter that crowds out
+        # the evidence would defeat the purpose of sending it.
+        sys_msg = system
+        if not sys_msg:
+            from . import doctrine
+            sys_msg, self.charter_in_force = doctrine.system_prompt(
+                role, context_limit=self.cfg.llm_context_limit)
         body = json.dumps({
             "model": self.cfg.llm_model,
             "messages": [{"role": "system", "content": sys_msg},

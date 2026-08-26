@@ -288,6 +288,550 @@ def cmd_capital(args, st: Settings) -> int:
     return 0
 
 
+def _print_turn(r: dict) -> None:
+    _hr(f"{r['mode']}  ·  state {r['state']}  ·  {r.get('elapsed_ms', 0)} ms")
+    print(f"  read as {r['mode']}: {r['mode_reason']}")
+    if r.get("topics"):
+        print(f"  topics: {', '.join(r['topics'])}")
+    print()
+    for line in r.get("finding", []):
+        print(f"  {line}")
+    for c in r.get("cannot", []):
+        print(f"\n  CANNOT — {c['capability']}")
+        print(f"    {c['detail']}")
+        if c.get("workaround"):
+            print(f"    instead: {c['workaround']}")
+        print(f"    (authorised by {c['charter']})")
+    doc = r.get("document") or {}
+    if doc:
+        _hr("DOCUMENT")
+        _kv("path", doc.get("path"))
+        _kv("read", f"{doc.get('words', 0):,} words, "
+                    f"{doc.get('chars', 0):,} chars")
+        kinds: dict = {}
+        for c in doc.get("claims", []):
+            kinds[c["kind"]] = kinds.get(c["kind"], 0) + 1
+        _kv("statements", ", ".join(f"{k.lower()} {v}"
+                                    for k, v in sorted(kinds.items())) or "none")
+        for c in doc.get("claims", [])[:10]:
+            mark = "testable" if c["testable"] else "not testable here"
+            print(f"\n  [{c['kind']}] {c['text'][:150]}")
+            print(f"      -> {mark}"
+                  + (f"; columns: {', '.join(c['features'])}"
+                     if c["features"] else ""))
+            if c.get("caveat"):
+                print(f"      !! {c['caveat']}")
+        if doc.get("proposals"):
+            _hr("CANDIDATES (untested — they enter the ordinary pass)")
+            for pr in doc["proposals"][:20]:
+                src = "stated" if "stated in" in pr["direction_source"] \
+                    else "unstated, so both directions are tested"
+                print(f"  {pr['statement']:<44} direction {src}")
+            print("\n  No threshold is taken from the document. Each candidate "
+                  "is swept over the\n  standard quantile grid (0.20 / 0.35 / "
+                  "0.50 / 0.65 / 0.80), and every variant\n  counts against "
+                  "the multiple-comparison denominator — a number lifted from\n"
+                  "  prose has no denominator behind it.")
+        if doc.get("missing_data"):
+            _hr("NO OBSERVATION COLUMN FOR THIS")
+            for md in doc["missing_data"]:
+                print(f"  {md['concept']}")
+                print(f"      {md['why']}")
+
+    surf = r.get("surfaced") or []
+    if surf:
+        _hr("NOTICED SINCE YOU LAST ASKED")
+        for s in surf:
+            print(f"  [{s.get('kind')}] {s.get('headline')}")
+            print(f"      {s.get('measured')}")
+            if s.get("why"):
+                print(f"      {s['why']}")
+            print(f"      priority {float(s.get('priority') or 0):.3f} "
+                  f"(estimate: importance x impact x urgency)")
+
+    diag = r.get("diagnosis") or []
+    if diag:
+        _hr("DIAGNOSIS")
+        for d in diag[:14]:
+            if d.get("severity"):
+                print(f"  {d['severity']:<9} {d['finding']}")
+                print(f"            measured: {d['measured']}")
+                print(f"            {d['why_it_matters']}")
+            elif d.get("root_cause"):
+                rc = d["root_cause"]
+                print(f"  {d['topic']}: first break at {rc['layer']} — "
+                      f"{rc['check']}")
+                print(f"    {rc['detail']}")
+                if rc.get("fix"):
+                    print(f"    fix: {rc['fix']}")
+    chains = [p for p in (r.get("plan") or []) if p.get("chain")]
+    for p in chains:
+        _hr(f"{p['topic'].upper()}  INPUT -> ... -> UI")
+        for ln in p["chain"]:
+            mark = "ok" if ln["ok"] else "BREAK"
+            print(f"  [{mark:<5}] {ln['layer']:<11}{ln['check']}")
+            print(f"           {ln['detail']}")
+            if ln.get("fix") and not ln["ok"]:
+                print(f"           fix: {ln['fix']}")
+        if not p["root_cause"]:
+            print(f"  {p['note']}")
+
+    steps = [p for p in (r.get("plan") or []) if p.get("phase")]
+    if steps:
+        _hr("PLAN")
+        for s in steps:
+            mark = "  (NOT AVAILABLE)" if s.get("blocked") else ""
+            print(f"  {s['step']}. {s['phase']:<11}{s['detail']}{mark}")
+            for f in s.get("files", [])[:12]:
+                print(f"       {f['path']}  ({f['lines']} lines)")
+    acts = r.get("actions") or []
+    if acts:
+        _hr("ACTIONS")
+        for a in acts[:14]:
+            flag = "" if a["runnable"] else "   [human only]"
+            print(f"  {a['command']:<34}{a['effect'][:60]}{flag}")
+            if a.get("why_not"):
+                print(f"       {a['why_not']}")
+    ran = r.get("ran") or {}
+    if ran.get("action"):
+        _hr(f"RAN {ran['action']['command']}  exit={ran.get('exit_code')}")
+        print(ran.get("output") or ran.get("error") or "")
+    llm = r.get("llm") or {}
+    if llm.get("available"):
+        _hr("NARRATION (commentary only)")
+        print("  " + (llm.get("text") or "").replace("\n", "\n  "))
+    elif llm.get("note"):
+        print(f"\n  {llm['note']}")
+    if r.get("charter"):
+        print(f"\n  charter: {' · '.join(r['charter'])}")
+
+
+def cmd_chat(args, st: Settings) -> int:
+    """The console, from a terminal. Same code path as the dashboard's CHAT."""
+    from .agents.console import Console
+    from .core.store import Store
+
+    store = Store(st.ensure_dirs())
+    engine = None
+    if not args.no_engine:
+        try:
+            engine = Engine(st)
+            engine.start(build_dna=args.dna)
+        except Exception as e:                                # noqa: BLE001
+            print(f"  engine unavailable ({type(e).__name__}: {e}); "
+                  f"answering from the store alone")
+    con = Console(st, engine.store if engine else store, engine=engine)
+
+    if args.question:
+        _print_turn(con.ask(" ".join(args.question), run=args.run,
+                            confirm=args.confirm,
+                            narrate=not args.no_narrate))
+        return 0
+
+    _hr("POLYMARKET QUANT BRIDGE — CONSOLE")
+    print("  Ask anything, or give an instruction. Ctrl-C or 'exit' to leave.")
+    print("  Try: audit the entire system · why is the news panel empty ·")
+    print("       what should I do next · analyse every wallet")
+    while True:
+        try:
+            q = input("\n> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if q.lower() in ("exit", "quit", "q"):
+            return 0
+        if not q:
+            continue
+        _print_turn(con.ask(q, narrate=not args.no_narrate))
+
+
+def cmd_ingest(args, st: Settings) -> int:
+    """§29. Read a document, convert it into candidates, adopt nothing."""
+    from .agents.console import Console
+    from .core.store import Store
+
+    con = Console(st, Store(st.ensure_dirs()))
+    _print_turn(con.ask(f"analyse the document {args.path}", narrate=False))
+    return 0
+
+
+def cmd_watch(args, st: Settings) -> int:
+    """§40. What the system noticed on its own, ranked."""
+    from .agents.surface import PRIORITY_FLOOR, Surfacer
+    from .core.store import Store
+
+    s = Surfacer(st, Store(st.ensure_dirs()))
+    if args.ack:
+        n = s.ack()
+        print(f"  acknowledged {n} discovery/discoveries")
+        return 0
+    fresh = s.run()
+    _hr("SURFACED NOW")
+    if not fresh:
+        print("  nothing new above the floor. §33: that is an answer.")
+    for d in fresh:
+        print(f"  [{d['kind']}] {d['headline']}")
+        print(f"      {d['measured']}")
+        print(f"      {d['why']}")
+        print(f"      priority {d['priority']:.3f} = importance "
+              f"{d['importance']:.2f} x impact {d['impact']:.2f} x urgency "
+              f"{d['urgency']:.2f}   [ESTIMATE]")
+        if d.get("action"):
+            print(f"      -> pqv3 {d['action'].removeprefix('pqv3 ')}")
+    _hr("EVERYTHING RECORDED")
+    rows = s.store.query(
+        "SELECT kind, headline, measured, priority, surfaced, acked "
+        "  FROM discoveries ORDER BY id DESC LIMIT 25")
+    for r in rows:
+        flag = "shown" if r["surfaced"] else "below floor"
+        print(f"  {r['priority']:.3f}  {flag:<11} {r['headline'][:70]}")
+    print(f"\n  the floor is {PRIORITY_FLOOR}. Below it a finding is recorded "
+          f"but not\n  surfaced, because a monitor that interrupts over "
+          f"everything gets muted.\n  The three factors are estimates that "
+          f"order this queue; nothing else\n  reads them.")
+    return 0
+
+
+def _series_for(st: Settings, token: str, lookback_days: int) -> tuple:
+    """(times, prices) for one token from the tape, oldest first."""
+    from .core.source import HistoricalSource
+    src = HistoricalSource(st)
+    if not src.available:
+        return (), ()
+    as_of = src.latest_ts()
+    # `prints` yields (ts, price, usdc, side) tuples, oldest first.
+    rows = src.prints(token, as_of, lookback_secs=lookback_days * 86_400,
+                      limit=20_000)
+    return ([int(r[0]) for r in rows], [float(r[1]) for r in rows])
+
+
+def cmd_depend(args, st: Settings) -> int:
+    """§11. Nonlinear dependence between two token price series."""
+    from .research import dependence as D
+
+    ta, a = _series_for(st, args.token_a, args.days)
+    tb, b = _series_for(st, args.token_b, args.days)
+    if not a or not b:
+        print("  no tape, or no prints for one of those tokens")
+        return 2
+    # Align on the shorter series by index, oldest first. Two tapes are not
+    # sampled on the same clock; index alignment is an approximation and it is
+    # named as one rather than presented as a join on time.
+    n = min(len(a), len(b))
+    a, b = a[-n:], b[-n:]
+    print(f"  aligned on {n} prints by index, not by timestamp — the two "
+          f"tapes\n  do not share a clock, and this is an approximation")
+
+    _hr("MUTUAL INFORMATION")
+    r = D.mutual_information(a, b, draws=args.draws)
+    _kv("verdict", r.verdict)
+    _kv("nats (raw)", _fmt(r.nats, 5))
+    _kv("null mean (the bias)", _fmt(r.surrogate.get("null_mean"), 5))
+    _kv("excess", _fmt(r.surrogate.get("excess"), 5))
+    _kv("p", r.surrogate.get("p_value"))
+    _kv("stable across bins", r.stable)
+    print(f"\n  {r.note}")
+    for w in r.warnings:
+        print(f"  ! {w}")
+
+    _hr("TRANSFER ENTROPY, BOTH DIRECTIONS")
+    both = D.transfer_entropy_both_ways(a, b, lag=args.lag, draws=args.draws)
+    for k in ("a_to_b", "b_to_a"):
+        d = both[k]
+        print(f"  {k:<8} {d['verdict']:<24} "
+              f"p={d['surrogate'].get('p_value')}")
+    _kv("reading", both["reading"])
+    print(f"\n  {both['note']}")
+
+    _hr("LEAD-LAG")
+    ll = D.lead_lag(a, b, max_lag=args.max_lag, draws=args.draws)
+    _kv("verdict", ll.verdict)
+    _kv("best lag (prints)", ll.best_lag)
+    _kv("best |r|", _fmt(abs(ll.best_corr), 4))
+    _kv("null mean best |r|", _fmt(ll.surrogate.get("null_mean"), 4))
+    _kv("p", ll.surrogate.get("p_value"))
+    print(f"\n  {ll.note}")
+    return 0
+
+
+def cmd_cycles(args, st: Settings) -> int:
+    """§11. Periodicity on the tape's own irregular sampling."""
+    from .research import spectral as S
+
+    times, prices = _series_for(st, args.token, args.days)
+    if not prices:
+        print("  no tape, or no prints for that token")
+        return 2
+    r = S.analyse(times, prices, draws=args.draws)
+    _hr(f"PERIODICITY — {args.token[:24]}")
+    _kv("prints", r.n)
+    _kv("span", f"{r.span_secs / 86400:.2f} d")
+    _kv("verdict", r.verdict)
+    _kv("best period", f"{r.best_period_hours:.3f} h")
+    _kv("peak power", _fmt(r.best_power, 4))
+    _kv("null mean peak", _fmt(r.surrogate.get("null_mean"), 4))
+    _kv("p", r.surrogate.get("p_value"))
+    if r.peaks:
+        _hr("TOP PEAKS")
+        for p in r.peaks:
+            print(f"  {p['period_hours']:>10.3f} h   power {p['power']:.4f}")
+    print(f"\n  {r.note}")
+    for w in r.warnings:
+        print(f"  ! {w}")
+    return 0
+
+
+def cmd_states(args, st: Settings) -> int:
+    """§11/§19. Hidden-state model over a token's price series."""
+    from .regime import hidden as H
+
+    _times, prices = _series_for(st, args.token, args.days)
+    if not prices:
+        print("  no tape, or no prints for that token")
+        return 2
+    print(f"  fitting {len(prices)} prints — this is Baum-Welch in pure "
+          f"Python\n  with a surrogate sweep; expect tens of seconds")
+    r = H.analyse(prices, surrogates=args.surrogates)
+    _hr(f"HIDDEN STATES — {args.token[:24]}")
+    _kv("verdict", r.verdict)
+    _kv("states chosen (BIC)", r.best_states)
+    _kv("restart agreement", r.restart_agreement)
+    if r.surrogate:
+        _kv("stage 1 (vs reordered)", f"p={r.surrogate.get('p_value')}")
+    if r.beyond_short_memory:
+        b = r.beyond_short_memory
+        _kv("stage 2 (vs Markov-1)",
+            f"BIC advantage {b.get('bic_advantage')}")
+    if r.persistence:
+        p = r.persistence
+        _kv("persistence ratio",
+            f"{p.get('persistence_ratio')} — leans "
+            f"{'switching' if p.get('leans_switching') else 'smooth latent'} "
+            f"(DIAGNOSTIC ONLY, gates nothing)")
+        print(f"\n  {p.get('reliability')}")
+        print(f"  cannot: {p.get('what_this_method_cannot_do')}")
+    if r.model:
+        _kv("expected durations", r.model.get("expected_durations"))
+        _kv("stationary occupancy", r.model.get("stationary"))
+    if r.bic_by_states:
+        _hr("MODEL SELECTION")
+        for row in r.bic_by_states:
+            print(f"  {row['states']} states  BIC {row['bic']:>12.2f}  "
+                  f"loglik {row['loglik']:>10.2f}  params {row['n_params']:>3}"
+                  f"  agreed {row['restart_agreement']}/{row['restarts']}")
+    if r.state_path_summary:
+        _hr("STATES")
+        for s in r.state_path_summary:
+            print(f"  state {s['state']}  share {s.get('share')}  "
+                  f"mean {_fmt(s.get('mean_value'), 4)}  "
+                  f"sd {_fmt(s.get('sd_value'), 4)}  "
+                  f"mean run {s.get('mean_run_length')}")
+    print(f"\n  {r.note}")
+    for w in r.warnings:
+        print(f"  ! {w}")
+    return 0
+
+
+def cmd_montecarlo(args, st: Settings) -> int:
+    """§17/§1. Sequencing risk: the same trades in a different order."""
+    import json as _json
+
+    from .core.store import Store
+    from .research import montecarlo as MC
+
+    store = Store(st.ensure_dirs())
+    rows = store.query(
+        "SELECT strategy_id, params FROM strategies WHERE strategy_id=?",
+        (args.strategy_id,))
+    if not rows:
+        print(f"  no strategy '{args.strategy_id}'. `pqv3 strategies` lists "
+              f"them")
+        return 2
+    params = _json.loads(rows[0]["params"] or "{}")
+    returns = (params.get("out_of_sample") or {}).get("returns") or []
+    if not returns:
+        returns = (params.get("in_sample") or {}).get("returns") or []
+        if returns:
+            print("  ! using IN-SAMPLE returns: this strategy carries no "
+                  "stored\n    out-of-sample return series. Treat everything "
+                  "below as optimistic")
+    if not returns:
+        print("  this strategy stored no per-trade return series, so there is "
+              "nothing\n  to resample. Run `pqv3 backtest "
+              f"{args.strategy_id}` first")
+        return 2
+
+    frac = args.fraction if args.fraction > 0 \
+        else st.capital.max_fraction_per_trade
+    cmp_ = MC.compare_resamplers(
+        returns, starting_capital=st.capital.starting_capital,
+        fraction=frac, paths=args.paths,
+        hard_stop_drawdown=st.capital.hard_stop_drawdown)
+
+    _hr(f"MONTE CARLO — {args.strategy_id}")
+    _kv("trades", len(returns))
+    _kv("bankroll", f"${st.capital.starting_capital:.2f}")
+    _kv("risked per trade", f"{frac:.1%} of equity")
+    _kv("paths per resampler", args.paths)
+    print(f"\n  {'':<22}{'iid':>14}{'block':>14}")
+    for label, key in (("median final", "median_final"),
+                       ("5th percentile", "p05_final"),
+                       ("95th percentile", "p95_final"),
+                       ("prob profit", "prob_profit"),
+                       ("median max DD", "median_max_drawdown"),
+                       ("95th max DD", "p95_max_drawdown"),
+                       ("prob hard stop", "prob_hard_stop"),
+                       ("prob ruin", "prob_ruin")):
+        print(f"  {label:<22}{cmp_['iid'][key]:>14}{cmp_['block'][key]:>14}")
+    b = cmp_["block"]
+    _hr("READING")
+    print(f"  {cmp_['reading']}")
+    print(f"\n  {b['note']}")
+    for w in b.get("warnings", []):
+        print(f"  ! {w}")
+    return 0
+
+
+def cmd_checkpoint(args, st: Settings) -> int:
+    """§31. Change control: create, inspect, and plan a rollback."""
+    from .core.checkpoint import Checkpoints, git_state
+    from .core.store import Store
+
+    cps = Checkpoints(st, Store(st.ensure_dirs()))
+
+    if args.rollback:
+        plan = cps.rollback_plan(args.rollback)
+        if "error" in plan:
+            print(f"  {plan['error']}")
+            return 2
+        _hr(f"ROLLBACK PLAN — {args.rollback}")
+        _kv("command", plan["command"])
+        if plan["code_changes"].get("stat"):
+            print("\n  code changed since the checkpoint:")
+            for line in str(plan["code_changes"]["stat"]).splitlines()[-20:]:
+                print(f"    {line}")
+        if plan["store_changes"]:
+            print("\n  store changed since the checkpoint:")
+            for k, v in plan["store_changes"].items():
+                print(f"    {k:<22} {v['was']} -> {v['now']} "
+                      f"({v['delta']:+d})")
+        print(f"\n  {plan['warning']}")
+        for b in plan["blockers"]:
+            print(f"\n  BLOCKED: {b}")
+        if not plan["safe"]:
+            print("\n  refusing. Clear the blockers above first.")
+            return 1
+        if not args.yes:
+            print("\n  this is a plan only. Re-run with --yes to execute the "
+                  "command above,\n  or run it yourself — it is an ordinary "
+                  "git command and nothing here is\n  hiding anything from "
+                  "you.")
+            return 0
+        from .core.checkpoint import _git
+        cps.create(label="pre-rollback", objective=f"before {args.rollback}")
+        ok, out = _git(*plan["command"].split()[1:])
+        print(f"\n  {'ok' if ok else 'FAILED'}: {out}")
+        return 0 if ok else 1
+
+    if args.list:
+        rows = cps.list()
+        _hr("CHECKPOINTS")
+        if not rows:
+            print("  none yet. `pqv3 checkpoint --note \"...\"` takes one.")
+            return 0
+        for r in rows:
+            dirty = " [tree was dirty]" if r["git_dirty"] else ""
+            print(f"  {r['checkpoint_id']}  {r['label']:<20} "
+                  f"{(r['git_sha'] or '')[:12]:<14}{r['mode']:<10}{dirty}")
+            if r["objective"]:
+                print(f"      {r['objective']}")
+        return 0
+
+    if args.diff:
+        d = cps.diff(args.diff)
+        if "error" in d:
+            print(f"  {d['error']}")
+            return 2
+        _hr(f"SINCE {args.diff}")
+        for k, v in (d["store"] or {}).items():
+            print(f"  {k:<22} {v['was']} -> {v['now']} ({v['delta']:+d})")
+        if not d["store"]:
+            print("  store: no table changed count")
+        for line in str(d["code"].get("stat") or "").splitlines()[-20:]:
+            print(f"  {line}")
+        print(f"\n  {d['note']}")
+        return 0
+
+    g = git_state()
+    cp = cps.create(label=args.label, objective=args.note, tests=args.tests)
+    _hr(f"CHECKPOINT {cp.checkpoint_id}")
+    _kv("label", cp.label)
+    _kv("objective", cp.objective or "(none given)")
+    _kv("git", f"{g.get('short', 'unavailable')} on "
+               f"{g.get('branch', '?')}" + (" [DIRTY]" if g.get("dirty") else ""))
+    _kv("mode", cp.mode)
+    _kv("strategies live", cp.store.get("strategies_live"))
+    _kv("rollback", cp.rollback)
+    if g.get("dirty"):
+        print(f"\n  {g['n_dirty']} uncommitted file(s). The SHA above does NOT "
+              f"describe\n  what is currently running. Commit before relying "
+              f"on this checkpoint.")
+    return 0
+
+
+def cmd_doctrine(args, st: Settings) -> int:
+    """Print the charter in force, and the boundary it is held to."""
+    from .agents import doctrine as doc
+    from .core.store import Store
+
+    limit = st.agents.llm_context_limit
+    s = doc.status(limit)
+    _hr("MASTER SYSTEM PROMPT")
+    _kv("file", s["path"])
+    _kv("available", s["available"])
+    _kv("sections", s["sections"])
+    _kv("size", f"{s['chars']:,} chars (~{s['approx_tokens']:,} tokens)")
+    _kv("context limit", f"{s['context_limit']:,} tokens")
+    _kv("in force", s["in_force"].upper())
+    print(f"\n  {s['note']}")
+
+    if args.full:
+        print("\n" + (doc.charter() or doc.CONDENSED))
+        return 0
+    if args.section:
+        sec = doc.section(args.section)
+        if not sec:
+            print(f"\n  no section {args.section}")
+            return 2
+        _hr(f"§{sec.number} {sec.title}")
+        print(sec.body)
+        return 0
+
+    _hr("SECTIONS")
+    for sec in doc.sections():
+        print(f"  §{sec.number:<3} {sec.title}")
+
+    try:
+        store = Store(st.ensure_dirs())
+    except Exception:                                         # noqa: BLE001
+        store = None
+    caps = doc.capabilities(st, store)
+    _hr("WHAT THIS INSTALLATION CAN DO")
+    for c in caps["can"]:
+        print(f"  + {c['capability']}")
+        print(f"      {c['detail']}")
+        print(f"      ({c['charter']})")
+    _hr("WHAT IT CANNOT")
+    for c in caps["cannot"]:
+        print(f"  - {c['capability']}")
+        print(f"      {c['detail']}")
+        if c.get("workaround"):
+            print(f"      instead: {c['workaround']}")
+        print(f"      ({c['charter']})")
+    print(f"\n  {caps['note']}")
+    return 0
+
+
 def cmd_dashboard(args, st: Settings) -> int:
     from .server.app import Dashboard
     if args.port:
@@ -914,6 +1458,82 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--gates-only", action="store_true")
     s.add_argument("--strategies-only", action="store_true")
     s.add_argument("-v", "--verbose", action="store_true")
+
+    # The control console. §2/§39 make this the primary human interface, so it
+    # is reachable without a browser as well as with one.
+    s = add("chat", cmd_chat,
+            help="the AI control console: ask anything, in plain English")
+    s.add_argument("question", nargs="*",
+                   help="ask once and exit; omit for an interactive session")
+    s.add_argument("--run", default="",
+                   help="also execute a catalogued action (see `pqv3 chat "
+                        "'list actions'`)")
+    s.add_argument("--confirm", default="",
+                   help="must equal --run; execution fails closed without it")
+    s.add_argument("--dna", action="store_true",
+                   help="build wallet DNA first (slower, richer answers)")
+    s.add_argument("--no-engine", action="store_true",
+                   help="answer from the store alone, without starting the "
+                        "engine")
+    s.add_argument("--no-narrate", action="store_true",
+                   help="skip the optional local-model narration")
+
+    # §11 / §17 / §31 — the research methods added on top of the console.
+    s = add("depend", cmd_depend,
+            help="nonlinear dependence, transfer entropy and lead-lag "
+                 "between two tokens")
+    s.add_argument("token_a")
+    s.add_argument("token_b")
+    s.add_argument("--days", type=int, default=30)
+    s.add_argument("--lag", type=int, default=1)
+    s.add_argument("--max-lag", type=int, default=20)
+    s.add_argument("--draws", type=int, default=400)
+
+    s = add("cycles", cmd_cycles,
+            help="periodicity on the tape's own irregular sampling")
+    s.add_argument("token")
+    s.add_argument("--days", type=int, default=30)
+    s.add_argument("--draws", type=int, default=200)
+
+    s = add("states", cmd_states,
+            help="hidden-state (HMM) model of a price series")
+    s.add_argument("token")
+    s.add_argument("--days", type=int, default=30)
+    s.add_argument("--surrogates", type=int, default=24)
+
+    s = add("montecarlo", cmd_montecarlo,
+            help="sequencing risk: the same trades in a different order")
+    s.add_argument("strategy_id")
+    s.add_argument("--paths", type=int, default=2000)
+    s.add_argument("--fraction", type=float, default=0.0,
+                   help="equity risked per trade (default: the capital cap)")
+
+    s = add("checkpoint", cmd_checkpoint,
+            help="change control: record a rollback point, or plan a rollback")
+    s.add_argument("--label", default="")
+    s.add_argument("--note", default="", help="the objective for the work "
+                                              "this checkpoint precedes")
+    s.add_argument("--tests", default="", help="test result at this point")
+    s.add_argument("--list", action="store_true")
+    s.add_argument("--diff", default="", metavar="CHECKPOINT_ID")
+    s.add_argument("--rollback", default="", metavar="CHECKPOINT_ID")
+    s.add_argument("--yes", action="store_true",
+                   help="execute the rollback command, not just plan it")
+
+    s = add("ingest", cmd_ingest,
+            help="read a research document and convert it into candidates")
+    s.add_argument("path")
+
+    s = add("watch", cmd_watch,
+            help="what the system noticed on its own, ranked")
+    s.add_argument("--ack", action="store_true",
+                   help="mark everything currently surfaced as seen")
+
+    s = add("doctrine", cmd_doctrine,
+            help="the master system prompt in force, and its real boundary")
+    s.add_argument("--full", action="store_true", help="print the whole text")
+    s.add_argument("--section", type=int, default=0,
+                   help="print one numbered section")
 
     add("selftest", cmd_selftest, help="check the installation")
     return p

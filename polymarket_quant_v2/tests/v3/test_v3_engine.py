@@ -243,7 +243,9 @@ def test_only_trustworthy_timestamps_override_v1(tape, store):
 def test_every_api_section_returns_without_error(st, store):
     from pqv3.server.api import Api
     api = Api(st, store, None)
-    assert len(Api.ROUTES) == 22
+    # 22 data sections plus DOCTRINE, which reports the charter in force and
+    # the measured boundary around it.
+    assert len(Api.ROUTES) == 23
     for section in Api.ROUTES:
         payload = api.get(section)
         assert "error" not in payload, f"{section}: {payload.get('error')}"

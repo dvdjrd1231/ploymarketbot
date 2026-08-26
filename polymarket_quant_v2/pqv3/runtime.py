@@ -69,6 +69,7 @@ class Engine:
         self.last_signals: list = []
         self.last_funnel: dict = {}
         self.last_crash: CrashReading | None = None
+        self.last_surfaced: list = []          # §40, filled by the research loop
         self.last_backtest: dict | None = None
         self.startup: list = []
         self.started_ts = 0
@@ -319,6 +320,19 @@ class Engine:
                 self._record_paper(d)
         self.forensics.run_all_losses(limit=25)
         self.forensics.analyse_missed(limit=25)
+
+        # §40. Ranked and recorded here rather than pushed: this loop has no
+        # channel to interrupt on, so what clears the floor waits in
+        # `discoveries` and rides out on the next console reply. A monitor
+        # that cannot reach anyone is not a monitor, which is why the console
+        # reads this table on every turn.
+        try:
+            from .agents.surface import Surfacer
+            self.last_surfaced = Surfacer(self.st, self.store, self).run()
+        except Exception as e:                                # noqa: BLE001
+            self.store.record_health("loop:surface", "ERROR",
+                                     error=f"{type(e).__name__}: {e}")
+
         self.store.record_health("loop:research", "OK", success=True,
                                  detail=f"{self.last_scan.markets_scanned} "
                                         f"markets")

@@ -12,15 +12,21 @@ bolted on. The chrome values below are lifted from `pqb/gui/app.py` and
     cards       group-box title, 20pt bold value, muted caption
     tabs        QTabWidget-style strip
 
-What is new is the nav: twenty-two sections instead of five, arranged in a
-sidebar rather than a single strip, because twenty-two tabs in one row is not
+What is new is the nav: twenty-four sections instead of five, arranged in a
+sidebar rather than a single strip, because twenty-four tabs in one row is not
 navigable. The card, table and panel components are unchanged.
 
+CHAT leads the nav because the charter puts it there — §2 and §39 make the
+console the primary human interface rather than an accessory to the tables. It
+is styled as a control surface, not a messaging app: no bubbles, no avatars,
+the same panels and tables as every other page, and every reply carrying the
+mode it was read as and the operating state it was answered in.
+
 The browser does NO computation. Every number rendered here arrives from
-`/api/<section>` as a finished value. The page's entire job is layout,
-formatting and drill-down — Python computes, the browser displays. That is the
-brief's requirement and also the reason this file contains no arithmetic beyond
-number formatting.
+`/api/<section>` as a finished value — and for CHAT, from `POST /api/chat`,
+where the reply is likewise finished before it is sent. The page's entire job
+is layout, formatting and drill-down. That is the brief's requirement and also
+the reason this file contains no arithmetic beyond number formatting.
 
 Reporting rules carried over from V2:
   * a number is never shown without the denominator that makes it readable
@@ -31,6 +37,7 @@ Reporting rules carried over from V2:
 from __future__ import annotations
 
 NAV = [
+    ("Console", ["CHAT", "DOCTRINE"]),
     ("Trading", ["OVERVIEW", "PORTFOLIO", "RISK", "PAPER", "LIVE"]),
     ("Research", ["OPPORTUNITIES", "STRATEGIES", "DISCOVERY", "BACKTEST",
                   "VALIDATION", "LEARNING"]),
@@ -150,6 +157,35 @@ details{margin:6px 0}
 summary{cursor:pointer;font-size:12px;color:var(--accent)}
 pre{background:var(--bg);border:1px solid var(--border);border-radius:4px;
   padding:10px;overflow-x:auto;font-size:11.5px;margin:6px 0}
+/* ---- console. The chat is a control surface, so it is laid out like the
+   rest of the product rather than like a messaging app: no bubbles, no
+   avatars, monospace where the content is a command. ---- */
+.chatlog{display:flex;flex-direction:column;gap:12px;margin-bottom:14px}
+.turn{border:1px solid var(--border);border-radius:5px;background:var(--panel);
+  padding:12px 14px}
+.turn.you{background:var(--bg)}
+.turn .who{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--muted);font-weight:600;margin-bottom:6px;display:flex;
+  gap:8px;align-items:center;flex-wrap:wrap}
+.turn ul{margin:6px 0;padding-left:18px} .turn li{margin:3px 0}
+.ask{display:flex;gap:8px;align-items:flex-start;position:sticky;bottom:0;
+  background:var(--bg);padding:10px 0 0}
+.ask textarea{flex:1;font:inherit;font-size:13px;padding:9px 11px;
+  border:1px solid var(--border);border-radius:4px;background:var(--panel);
+  color:var(--ink);resize:vertical;min-height:52px}
+.ask textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}
+.chip{font-size:11.5px;padding:3px 9px;border-radius:11px;cursor:pointer;
+  border:1px solid var(--border);background:var(--panel);color:var(--ink-2);
+  font-family:inherit}
+.chip:hover{color:var(--ink);border-color:var(--accent)}
+.limit{border-left:3px solid var(--amber);padding:7px 11px;margin:6px 0;
+  background:var(--bg);font-size:12px}
+.limit b{color:var(--amber)}
+.cite{font-size:11px;color:var(--muted);margin-top:8px}
+code{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;
+  background:var(--bg);border:1px solid var(--border);border-radius:3px;
+  padding:1px 5px}
 .statusbar{background:var(--panel);border-top:1px solid var(--border);
   padding:5px 16px;font-size:11.5px;color:var(--muted);display:flex;gap:14px;
   flex:0 0 auto}
@@ -209,6 +245,10 @@ async function render(section){
   document.querySelectorAll('nav button').forEach(b=>
     b.setAttribute('aria-current', b.dataset.s===section));
   const main = $('#main');
+  // CHAT has no GET endpoint and must not be wiped by the refresh timer:
+  // it holds the conversation, which is the one thing on this dashboard the
+  // server does not re-derive on demand.
+  if(section==='CHAT'){ return renderChat(); }
   main.innerHTML = `<div class="empty">loading ${esc(section)}…</div>`;
   let d;
   try { d = await load(section); }
@@ -222,6 +262,8 @@ async function render(section){
 }
 
 const SUB = {
+ CHAT:'The control interface. Plain English in; a computed, sourced answer out. Every figure is read from the store at answer time — the optional local model narrates, it never supplies a number.',
+ DOCTRINE:'The operating charter this system is held to, and the measured boundary of what this installation can actually do.',
  OVERVIEW:'Account, performance and system reach. Every figure is derived from persisted rows; a null means not yet measured, never zero.',
  PORTFOLIO:'Exposure grouped by true underlying event, which is the view in which correlated bets stop looking diversified.',
  RISK:'Drawdown against the hard stop, plus the crash meter and what it authorises.',
@@ -475,7 +517,17 @@ VIEWS.VALIDATION = d => {
     ], d.gate_cost));
 };
 
-VIEWS.ACTIVITY = d => box(`decisions (${int(d.n_decisions)} total)`, table([
+VIEWS.ACTIVITY = d => box('noticed by the system itself', table([
+    {t:'Priority',cls:'num',f:r=>num(r.priority,3)},
+    {t:'Kind',f:r=>`<span class="tag">${esc(r.kind)}</span>`},
+    {t:'Headline',cls:'wrap',k:'headline'},
+    {t:'Measured',cls:'wrap',k:'measured'},
+    {t:'Shown',f:r=>tagOf(r.surfaced)},
+    {t:'Seen',f:r=>tagOf(r.acked)},
+    {t:'I x E x U',f:r=>`${num(r.importance,2)} x ${num(r.impact,2)} x ${num(r.urgency,2)}`},
+    {t:'Why',cls:'wrap',k:'why'},
+  ], d.discoveries) + note(d.discoveries_note))
+  + box(`decisions (${int(d.n_decisions)} total)`, table([
     {t:'When',f:r=>ts(r.ts)},{t:'Mode',k:'mode'},
     {t:'Market',f:r=>esc(trunc(r.market_id,16))},
     {t:'Action',f:r=>`<span class="tag ${r.action==='TRADE'?'g':''}">${esc(r.action)}</span>`},
@@ -637,6 +689,206 @@ VIEWS.BACKTEST = d => d.result
   ? box('result', `<pre>${esc(JSON.stringify(d.result,null,2))}</pre>`)
   : '<div class="empty">no backtest result</div>';
 
+// ---------------------------------------------------------------- console
+const CHATLOG = [];
+const EXAMPLES = [
+  'Audit the entire system',
+  'Why is the news panel empty?',
+  'What is the highest-value thing to do next?',
+  'Analyse every wallet',
+  'How do I backtest a strategy across every market?',
+  'Find every bottleneck',
+  'Explain what is blocking decisions',
+];
+
+function renderChat(){
+  $('#main').innerHTML = `<h2 class="page-t">CHAT</h2>
+    <p class="page-s">${esc(SUB.CHAT)}</p>
+    <div class="chips">${EXAMPLES.map((e,i)=>
+      `<button class="chip" data-ex="${i}">${esc(e)}</button>`).join('')}</div>
+    <div class="chatlog" id="chatlog">${CHATLOG.map(turnHtml).join('')}</div>
+    <div class="ask">
+      <textarea id="q" placeholder="Ask anything, or give an instruction. Enter to send, Shift+Enter for a new line."></textarea>
+      <button class="btn" id="send">Send</button>
+    </div>`;
+  const q = $('#q');
+  q.focus();
+  q.addEventListener('keydown', e=>{
+    if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); }
+  });
+  $('#send').onclick = send;
+  document.querySelectorAll('.chip').forEach(c=>c.onclick = ()=>{
+    q.value = EXAMPLES[Number(c.dataset.ex)]; send();
+  });
+  $('#stamp').textContent = CHATLOG.length ? CHATLOG.length+' turn(s)' : '';
+}
+
+async function send(){
+  const q = $('#q'); const text = q.value.trim();
+  if(!text) return;
+  q.value=''; q.disabled=true; $('#send').disabled=true;
+  CHATLOG.push({you:text});
+  CHATLOG.push({pending:true});
+  $('#chatlog').innerHTML = CHATLOG.map(turnHtml).join('');
+  window.scrollTo(0, document.body.scrollHeight);
+  let d;
+  try{
+    const r = await fetch('/api/chat', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text})});
+    d = await r.json();
+  }catch(e){ d = {error:String(e)}; }
+  CHATLOG.pop();
+  CHATLOG.push(d);
+  $('#chatlog').innerHTML = CHATLOG.map(turnHtml).join('');
+  q.disabled=false; $('#send').disabled=false; q.focus();
+  window.scrollTo(0, document.body.scrollHeight);
+  $('#stamp').textContent = CHATLOG.length+' turn(s)';
+}
+
+function turnHtml(t){
+  if(t.you) return `<div class="turn you"><div class="who">you</div>
+    <div>${esc(t.you)}</div></div>`;
+  if(t.pending) return `<div class="turn"><div class="who">console</div>
+    <div class="mut">reading the store…</div></div>`;
+  if(t.error) return `<div class="turn"><div class="who">console</div>
+    <div class="neg">${esc(t.error)}</div></div>`;
+
+  const head = `<div class="who">console
+    <span class="tag">${esc(t.mode)}</span>
+    <span class="tag">state ${esc(t.state)}</span>
+    ${(t.topics||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')}
+    <span class="mut">${int(t.elapsed_ms)} ms</span></div>`;
+
+  const finding = `<ul>${(t.finding||[]).map(f=>
+    `<li>${esc(f)}</li>`).join('')}</ul>`;
+
+  const diag = (t.diagnosis||[]).length ? `<details open><summary>diagnosis
+    (${(t.diagnosis||[]).length})</summary>` + table([
+      {t:'Severity',f:r=>r.severity?`<span class="tag ${r.severity==='BLOCKING'?'r':(r.severity==='HIGH'?'a':'')}">${esc(r.severity)}</span>`:esc(r.topic||'')},
+      {t:'Finding',cls:'wrap',f:r=>esc(r.finding||(r.root_cause||{}).check||'')},
+      {t:'Measured',cls:'wrap',f:r=>esc(r.measured||(r.root_cause||{}).detail||'')},
+      {t:'Why it matters',cls:'wrap',f:r=>esc(r.why_it_matters||(r.root_cause||{}).fix||'')},
+    ], t.diagnosis) + '</details>' : '';
+
+  const chain = (t.plan||[]).filter(p=>p.chain).map(p=>
+    `<details><summary>${esc(p.topic)}: INPUT → … → UI</summary>` + table([
+      {t:'Layer',f:r=>esc(r.layer)},{t:'Check',cls:'wrap',f:r=>esc(r.check)},
+      {t:'OK',f:r=>tagOf(r.ok)},{t:'Detail',cls:'wrap',f:r=>esc(r.detail)},
+      {t:'Fix',cls:'wrap',f:r=>esc(r.fix||'')},
+    ], p.chain) + '</details>').join('');
+
+  const steps = (t.plan||[]).filter(p=>p.phase).length
+    ? `<details open><summary>plan</summary>` + table([
+        {t:'#',cls:'num',f:r=>int(r.step)},{t:'Phase',f:r=>esc(r.phase)},
+        {t:'Detail',cls:'wrap',f:r=>(r.blocked?'<span class="neg">':'')+esc(r.detail)+(r.blocked?'</span>':'')},
+        {t:'Files',cls:'wrap',f:r=>esc((r.files||[]).map(f=>f.path).join(', '))},
+      ], (t.plan||[]).filter(p=>p.phase)) + '</details>' : '';
+
+  const actions = (t.actions||[]).length ? `<details><summary>actions
+    (${(t.actions||[]).length})</summary>` + table([
+      {t:'Command',f:r=>`<code>${esc(r.command)}</code>`},
+      {t:'Effect',cls:'wrap',f:r=>esc(r.effect)},
+      {t:'Takes',f:r=>esc(r.minutes||'')},
+      {t:'Console may run',f:r=>tagOf(r.runnable)},
+      {t:'Why not',cls:'wrap',f:r=>esc(r.why_not||'')},
+    ], t.actions) + '</details>' : '';
+
+  // §40. Above the answer, because by the time the reader has scrolled past
+  // the diagnosis they have stopped reading.
+  const surf = (t.surfaced||[]).length ? box('noticed since you last asked',
+    table([
+      {t:'Priority',cls:'num',f:r=>num(r.priority,3)},
+      {t:'Kind',f:r=>`<span class="tag">${esc(r.kind)}</span>`},
+      {t:'What',cls:'wrap',k:'headline'},
+      {t:'Measured',cls:'wrap',k:'measured'},
+      {t:'Why it matters',cls:'wrap',k:'why'},
+    ], t.surfaced) + `<div class="cite">priority = importance &times; expected
+      economic impact &times; urgency. All three are ESTIMATES that order this
+      queue; nothing downstream reads them.</div>`) : '';
+
+  const doc = t.document && t.document.path ? (
+    t.document.ok
+    ? `<details open><summary>document: ${esc(t.document.path)}
+        (${int(t.document.words)} words)</summary>`
+      + table([
+          {t:'Kind',f:r=>`<span class="tag ${r.kind==='CLAIM'?'a':''}">${esc(r.kind)}</span>`},
+          {t:'Statement',cls:'wrap',f:r=>esc(r.text)},
+          {t:'Testable',f:r=>tagOf(r.testable)},
+          {t:'Columns',cls:'wrap',f:r=>esc((r.features||[]).join(', ')||'—')},
+          {t:'Caveat',cls:'wrap',f:r=>esc(r.caveat||'')},
+        ], t.document.claims)
+      + ((t.document.proposals||[]).length ? `<div class="cite">candidates, untested:</div>`
+        + table([
+          {t:'Candidate',f:r=>`<code>${esc(r.statement)}</code>`},
+          {t:'Direction',cls:'wrap',k:'direction_source'},
+        ], t.document.proposals) : '')
+      + ((t.document.missing_data||[]).length ? `<div class="cite">no observation column for these:</div>`
+        + table([
+          {t:'Concept',k:'concept'},{t:'Why',cls:'wrap',k:'why'},
+        ], t.document.missing_data) : '')
+      + '</details>'
+    : `<div class="limit"><b>could not read ${esc(t.document.path)}</b> &mdash;
+        ${esc(t.document.error)}</div>`) : '';
+
+  const cannot = (t.cannot||[]).map(c=>
+    `<div class="limit"><b>cannot: ${esc(c.capability)}</b> — ${esc(c.detail)}
+     ${c.workaround?`<br><span class="mut">instead: ${esc(c.workaround)}</span>`:''}
+     <div class="cite">authorised by ${esc(c.charter)}</div></div>`).join('');
+
+  const ev = Object.keys(t.evidence||{}).length
+    ? `<details><summary>evidence read for this answer</summary>
+       <pre>${esc(JSON.stringify(t.evidence,null,2))}</pre></details>` : '';
+
+  const ran = t.ran && t.ran.action ? `<details open><summary>ran
+    <code>${esc(t.ran.action.command)}</code> — exit ${int(t.ran.exit_code)}
+    </summary><pre>${esc(t.ran.output||t.ran.error||'')}</pre></details>` : '';
+
+  const llm = (t.llm && t.llm.available)
+    ? `<details><summary>narration (commentary only, ${esc(t.llm.charter_in_force||'')} charter)</summary>
+       <div>${esc(t.llm.text)}</div>
+       <div class="cite">${esc(t.llm.status||'')}</div></details>`
+    : (t.llm && t.llm.note ? `<div class="cite">${esc(t.llm.note)}</div>` : '');
+
+  const cite = (t.charter||[]).length
+    ? `<div class="cite">charter: ${(t.charter||[]).map(esc).join(' · ')}</div>` : '';
+
+  return `<div class="turn">${head}${surf}${finding}${cannot}${doc}${diag}
+    ${steps}${chain}${actions}${ran}${ev}${llm}${cite}</div>`;
+}
+
+VIEWS.DOCTRINE = d => {
+  const s = d.status||{}, c = d.capabilities||{};
+  const cards = [
+    card('Charter', s.available?'<span class="pos">LOADED</span>':'<span class="neg">MISSING</span>',
+         esc(s.path||'')),
+    card('Sections', int(s.sections), `${int(s.chars)} chars`),
+    card('In force', esc(String(s.in_force||'').toUpperCase()),
+         `context limit ${int(s.context_limit)} tokens`),
+    card('Can', int(c.n_can), 'probed capabilities'),
+    card('Cannot', int(c.n_cannot), 'published limits'),
+    card('Console turns', int(d.console_turns), 'remembered'),
+  ].join('');
+  return box('charter status', `<div class="cards">${cards}</div>`+note(s.note))
+   + box('what this installation can do', table([
+      {t:'Capability',k:'capability'},{t:'Detail',k:'detail',cls:'wrap'},
+      {t:'Charter',k:'charter',cls:'wrap'},
+     ], c.can))
+   + box('what it cannot', table([
+      {t:'Capability',k:'capability'},{t:'Detail',k:'detail',cls:'wrap'},
+      {t:'Charter',k:'charter',cls:'wrap'},
+      {t:'Instead',k:'workaround',cls:'wrap'},
+     ], c.cannot) + note(c.note))
+   + box('sections', table([
+      {t:'§',cls:'num',k:'number'},{t:'Title',k:'title'},
+      {t:'Chars',cls:'num',f:r=>int(r.chars)},
+     ], d.sections))
+   + box('condensed charter (sent when the full text will not fit)',
+      `<pre>${esc(d.condensed||'')}</pre>`)
+   + box('full charter (canonical)', `<details><summary>show</summary>
+      <pre>${esc(d.text||'')}</pre></details>`);
+};
+
 async function openWallet(w){
   const r = await fetch('/api/wallet_detail?wallet='+encodeURIComponent(w));
   const d = await r.json();
@@ -668,7 +920,12 @@ $('#theme').onclick = ()=>{
   document.documentElement.setAttribute('data-theme', cur==='dark'?'light':'dark');
 };
 render(CURRENT);
-setInterval(()=>{ if(document.visibilityState==='visible') render(CURRENT); }, 30000);
+setInterval(()=>{
+  // Never auto-refresh CHAT: it would discard whatever is half-typed, and
+  // there is nothing to refresh — a console turn is a record of what was true
+  // when it was asked, not a live view.
+  if(document.visibilityState==='visible' && CURRENT!=='CHAT') render(CURRENT);
+}, 30000);
 """
 
 

@@ -326,6 +326,69 @@ CREATE TABLE IF NOT EXISTS alerts (
     data_version INTEGER NOT NULL, schema_version INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_alert_ts ON alerts(ts);
 
+-- §40. Things the system noticed on its own, ranked by importance x expected
+-- economic impact x urgency. `surfaced` records whether it cleared the floor
+-- and was shown; everything else is kept anyway, so "you never told me" has an
+-- answer either way. The three factors are ESTIMATES used to order a queue —
+-- nothing downstream of this table reads them.
+CREATE TABLE IF NOT EXISTS discoveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'SYSTEM',
+    headline TEXT NOT NULL DEFAULT '', measured TEXT NOT NULL DEFAULT '',
+    importance REAL NOT NULL DEFAULT 0.0, impact REAL NOT NULL DEFAULT 0.0,
+    urgency REAL NOT NULL DEFAULT 0.0, priority REAL NOT NULL DEFAULT 0.0,
+    why TEXT NOT NULL DEFAULT '', action TEXT NOT NULL DEFAULT '',
+    surfaced INTEGER NOT NULL DEFAULT 0, acked INTEGER NOT NULL DEFAULT 0,
+    ts INTEGER NOT NULL, capture_ts INTEGER NOT NULL, source TEXT NOT NULL,
+    data_version INTEGER NOT NULL, schema_version INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_disc_key ON discoveries(key);
+CREATE INDEX IF NOT EXISTS ix_disc_pri ON discoveries(priority);
+
+-- §29. What a supplied document was read as: the classified statements, the
+-- candidates they map to, and the concepts they rest on that this system has
+-- no column for. Kept so a claim can be traced back to the page it came from.
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT NOT NULL, kind TEXT NOT NULL DEFAULT '',
+    ok INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+    chars INTEGER NOT NULL DEFAULT 0, words INTEGER NOT NULL DEFAULT 0,
+    claims TEXT NOT NULL DEFAULT '[]', proposals TEXT NOT NULL DEFAULT '[]',
+    missing_data TEXT NOT NULL DEFAULT '[]', note TEXT NOT NULL DEFAULT '',
+    ts INTEGER NOT NULL, capture_ts INTEGER NOT NULL, source TEXT NOT NULL,
+    data_version INTEGER NOT NULL, schema_version INTEGER NOT NULL);
+
+-- §31. A checkpoint is a JOIN of the git commit and the store state at one
+-- instant, plus the objective a human stated for the work that followed. Git
+-- already versions the code better than a bespoke table could; what it cannot
+-- record is which strategies were live and how many rows each table held, and
+-- restoring one half without the other is a new configuration, not a rollback.
+CREATE TABLE IF NOT EXISTS checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    checkpoint_id TEXT NOT NULL UNIQUE, label TEXT NOT NULL DEFAULT '',
+    objective TEXT NOT NULL DEFAULT '', git_sha TEXT NOT NULL DEFAULT '',
+    git_branch TEXT NOT NULL DEFAULT '', git_dirty INTEGER NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT '{}', mode TEXT NOT NULL DEFAULT '',
+    live_authorized INTEGER NOT NULL DEFAULT 0,
+    tests TEXT NOT NULL DEFAULT '', rollback TEXT NOT NULL DEFAULT '',
+    ts INTEGER NOT NULL, capture_ts INTEGER NOT NULL, source TEXT NOT NULL,
+    data_version INTEGER NOT NULL, schema_version INTEGER NOT NULL);
+
+-- Control-console transcript. §22 (research memory) applied to the chat
+-- interface: every turn is kept with the mode it was read as, the evidence
+-- that answered it and whether a command was run, so "why did it say that"
+-- has an answer that does not depend on anybody's recollection.
+CREATE TABLE IF NOT EXISTS console_turns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    question TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'RESEARCH',
+    state TEXT NOT NULL DEFAULT 'RESEARCH', topics TEXT NOT NULL DEFAULT '[]',
+    finding TEXT NOT NULL DEFAULT '[]', diagnosis TEXT NOT NULL DEFAULT '[]',
+    actions TEXT NOT NULL DEFAULT '[]', ran TEXT NOT NULL DEFAULT '',
+    llm_available INTEGER NOT NULL DEFAULT 0,
+    elapsed_ms INTEGER NOT NULL DEFAULT 0,
+    ts INTEGER NOT NULL, capture_ts INTEGER NOT NULL, source TEXT NOT NULL,
+    data_version INTEGER NOT NULL, schema_version INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_console_ts ON console_turns(ts);
+
 -- Human authorisations. LIVE mode is a row here, never a config value.
 CREATE TABLE IF NOT EXISTS authorizations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

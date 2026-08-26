@@ -64,7 +64,12 @@ def make_handler(st: Settings, api: Api, engine):
                 return self._send(200, html.encode(), "text/html; charset=utf-8")
 
             if path == "/api":
-                return self._json({"sections": list(Api.ROUTES)})
+                return self._json({"sections": list(Api.ROUTES),
+                                   "post": ["/api/chat"]})
+
+            if path == "/api/chat_history":
+                return self._json(api.chat_history(
+                    int((qs.get("limit") or ["50"])[0])))
 
             if path.startswith("/api/"):
                 name = path[5:]
@@ -86,6 +91,49 @@ def make_handler(st: Settings, api: Api, engine):
                                    "engine": engine.status() if engine else None})
 
             self._json({"error": "not found", "path": path}, 404)
+
+        # ------------------------------------------------------------- POST
+        def _same_origin(self) -> bool:
+            """Reject a cross-site POST.
+
+            There is no authentication over loopback and adding one would be
+            theatre — but "no auth" and "any web page you visit can drive the
+            console" are different propositions. Any page can make the browser
+            POST here; what it cannot do is forge Origin, and it cannot send
+            application/json cross-origin without a preflight this server never
+            answers. Requiring both closes the hole that the loopback bind
+            alone does not.
+            """
+            origin = self.headers.get("Origin")
+            if origin and origin.rstrip("/") != st.server.url.rstrip("/"):
+                return False
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0]
+            return ctype.strip() == "application/json"
+
+        def do_POST(self) -> None:                            # noqa: N802
+            path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+            if path != "/api/chat":
+                return self._json({"error": "not found", "path": path}, 404)
+            if not self._same_origin():
+                return self._json(
+                    {"error": "refused",
+                     "reason": "cross-site POST, or Content-Type is not "
+                               "application/json"}, 403)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                if n > 64_000:
+                    return self._json({"error": "request too large"}, 413)
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except Exception as e:                            # noqa: BLE001
+                return self._json({"error": f"bad request: {e}"}, 400)
+            try:
+                return self._json(api.chat(
+                    str(body.get("text") or ""),
+                    run=str(body.get("run") or ""),
+                    confirm=str(body.get("confirm") or ""),
+                    narrate=bool(body.get("narrate", True))))
+            except Exception as e:                            # noqa: BLE001
+                return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
     return Handler
 
