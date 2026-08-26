@@ -83,10 +83,9 @@ if errorlevel 1 (
 )
 echo.
 
-REM --- 5. report ------------------------------------------------------
-echo [ 5/5 ] Rewriting the research report...
-%PY% -m pqv3 report
-%PY% -m pqv3 report >> "%LOG%" 2>&1
+REM --- 5. results -----------------------------------------------------
+echo [ 5/5 ] Handing over to STEP 3 - RESULTS...
+call "%~dp03-RESULTS.bat" nopause
 
 echo.
 echo ============================================================
@@ -94,9 +93,9 @@ echo   DONE
 echo ============================================================
 echo.
 echo   Report      : var\reports\RESEARCH-REPORT.md
-echo   Strategies  : python -m pqv3 strategies
+echo   Results     : re-read any time with 3-RESULTS.bat
 echo   Transcript  : %LOG%
-echo   Dashboard   : double-click DASHBOARD.vbs
+echo   Dashboard   : double-click 4-DASHBOARD.vbs
 echo.
 echo   Order-book history ACCUMULATES - one run captures one snapshot
 echo   per token. For continuous capture leave this running instead:

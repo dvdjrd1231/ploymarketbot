@@ -125,13 +125,20 @@ echo [10/11 ] forensics  - loss classification and missed opportunities
 %PY% -m pqv3 forensics
 %PY% -m pqv3 forensics >> "%LOG%" 2>&1
 
+REM --- 10b. Results -----------------------------------------------------
+echo.
+echo ------------------------------------------------------------
+echo   Handing over to STEP 3 - RESULTS
+echo ------------------------------------------------------------
+call "%~dp03-RESULTS.bat" nopause
+
 REM --- 11. Dashboard ---------------------------------------------------
 echo.
 echo ============================================================
 echo   DONE
 echo ============================================================
 echo.
-echo   Live dashboard   : double-click DASHBOARD.vbs
+echo   Live dashboard   : double-click 4-DASHBOARD.vbs
 echo                      ^(or: python -m pqv3 dashboard^)
 echo   V2 static report : var\dashboard.html
 echo   Full transcript  : %LOG%
@@ -140,6 +147,9 @@ echo   Starting bankroll is $%PQV3_STARTING_CAPITAL%. To change it:
 echo     set PQV3_STARTING_CAPITAL=250
 echo   or per run:
 echo     python -m pqv3 --capital 250 scan
+echo.
+echo   NEXT STEP: double-click 2-COLLECT.bat to capture live data
+echo             and re-run the research on it.
 echo.
 echo   Read next, in this order:
 echo     README.md                    what this is and what it refuses to do
@@ -157,7 +167,7 @@ echo.
 if not defined PQV3_NO_PAUSE (
   echo   Press any key to open the live dashboard...
   pause >nul
-  start "" "%~dp0DASHBOARD.vbs"
+  start "" "%~dp04-DASHBOARD.vbs"
 )
 exit /b 0
 

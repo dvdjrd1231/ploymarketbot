@@ -1,0 +1,122 @@
+POLYMARKET QUANT BRIDGE V3
+==========================================================
+
+Run the numbered files in order. Nothing else is needed.
+
+
+BEFORE YOU START
+----------------------------------------------------------
+Extract this folder so that it sits NEXT TO your data folder:
+
+    ...\polymarket_quant_v2\        <- this folder
+    ...\Polymarket-Bot-DATA\        <- your existing data
+
+If they are not side by side, step 1 will stop and tell you
+exactly what to set.
+
+You need Python 3.11 or newer, with "Add python.exe to PATH"
+ticked during its setup. Nothing else installs - this system
+uses only the Python standard library.
+
+
+THE STEPS
+----------------------------------------------------------
+
+  1-INSTALL.bat        ~15 min   Run once.
+                                 Checks everything, runs the
+                                 test suite, proves the capital
+                                 model at your bankroll, runs
+                                 the first research pass, then
+                                 shows results and opens the
+                                 dashboard.
+
+  2-COLLECT.bat        ~20 min   Run after step 1, then whenever
+                                 you want fresh data.
+                                 Captures live data, repairs what
+                                 it can, re-runs the research ONLY
+                                 if the data actually improved,
+                                 then shows results.
+                                 Takes ~6 min when nothing changed.
+
+  3-RESULTS.bat        ~4 min    Optional. Steps 1 and 2 run this
+                                 for you at the end.
+                                 Double-click it any time to
+                                 re-read the findings without
+                                 re-running the research.
+
+  4-DASHBOARD.vbs      instant   Reopens the dashboard at
+                                 http://127.0.0.1:8787/
+
+  5-STOP-DASHBOARD.bat instant   Stops the background dashboard.
+
+
+YOUR STARTING BANKROLL
+----------------------------------------------------------
+$100 is only a default. It is never assumed anywhere in the
+code. To change it, edit ONE line near the top of
+1-INSTALL.bat:
+
+    set "PQV3_STARTING_CAPITAL=100"
+
+Every risk limit is a percentage of equity, so the model
+behaves the same at any size. What does NOT scale is the
+exchange's minimum order - which is why you will see some
+trades refused as CAPITAL_INFEASIBLE at small balances.
+That refusal is correct, not a bug.
+
+
+THREE THINGS THAT LOOK LIKE FAULTS BUT ARE NOT
+----------------------------------------------------------
+
+1. Step 2 says "NO MATCHES" on the settlement repair.
+
+   Expected. Those markets are not in the venue's public
+   catalogue, so their exact resolution times cannot be
+   recovered. Re-running will not change it. Markets that
+   resolve while collection is RUNNING do get accurate
+   timestamps - so the fix is to leave it running, not to
+   repeat the step.
+
+2. News, Blockchain and Microstructure panels are empty.
+
+   Expected on a fresh install. That data has no history in
+   this project and cannot be backfilled - it accumulates
+   from the moment you start collecting. The panels say so
+   rather than showing zeros.
+
+3. Every market says DO NOT TRADE.
+
+   Read 3-RESULTS.bat step [2/4]. It names the exact gate
+   and the exact number. On the supplied data the honest
+   answer is that the measured edge is smaller than the
+   trading costs at the moment the signal fires - so
+   refusing is correct.
+
+
+LIVE TRADING
+----------------------------------------------------------
+It is OFF, and no step above can turn it on. Enabling it is
+a separate, deliberate act that records what was and was not
+verified at the moment you approved it.
+
+
+IF SOMETHING GOES WRONG
+----------------------------------------------------------
+Send back whichever log matches the step that failed:
+
+    var\install-run.log
+    var\collect-run.log
+    var\results.log
+
+Each one contains the complete output of that step.
+
+
+READ NEXT
+----------------------------------------------------------
+    README.md                    what this is, and what it
+                                 refuses to do
+    docs\ENGINE-LIMITS.md        the seven questions this data
+                                 genuinely cannot answer
+
+No claim of guaranteed profit is made anywhere in this
+system, and none should be read into any number it produces.

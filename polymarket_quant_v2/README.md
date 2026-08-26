@@ -17,14 +17,26 @@ profitability.**
 ## Install
 
 Python 3.11+. **Standard library only** — no dependencies, nothing to
-download, and nothing dials out unless you run `COLLECT.bat`.
+download, and nothing dials out unless you run `2-COLLECT.bat`.
+
+Run the numbered files in order — no commands to type.
 
 ```
-double-click  INSTALL.bat        install check, full research pass, dashboard
-double-click  DASHBOARD.vbs      live dashboard at http://127.0.0.1:8787/
-double-click  COLLECT.bat        start live capture (the ONLY networked file)
-double-click  STOP-DASHBOARD.bat stop the background server
+START-HERE.txt          read this first
+1-INSTALL.bat  ~15 min  once. checks, tests, first research pass,
+                        results, then opens the dashboard
+2-COLLECT.bat  ~20 min  capture live data, repair, re-research ONLY if
+                        the data improved, then results.
+                        (the ONLY file that uses the network)
+3-RESULTS.bat   ~4 min  optional. steps 1 and 2 call it for you.
+                        re-read the findings any time
+4-DASHBOARD.vbs         reopen http://127.0.0.1:8787/
+5-STOP-DASHBOARD.bat    stop the background server
 ```
+
+Steps 1 and 2 both end by calling step 3, so `strategies`, `signals`,
+`invert` and `report` run automatically. Nothing needs to be typed at a
+prompt.
 
 ### Your bankroll is configured, never assumed
 
@@ -35,7 +47,7 @@ anything about it. Change it in any of three ways:
 set PQV3_STARTING_CAPITAL=250     & REM environment, persists for the session
 python -m pqv3 --capital 250 scan & REM per run
 ```
-…or edit the one line at the top of `INSTALL.bat`.
+…or edit the one line at the top of `1-INSTALL.bat`.
 
 Every risk fraction is a fraction of *equity*, so the model behaves identically
 at $100 and at $100,000. What does **not** scale is the venue's absolute
@@ -93,8 +105,9 @@ was never collected.
 became public is recorded nowhere. The fallback can only delay information,
 never advance it, so it is safe — but it makes point-in-time wallet track
 record structurally untestable and inflates the multiple-testing penalty
-roughly 12×. `COLLECT.bat` repairs it from the venue; `python -m pqv3
-inventory` reports coverage.
+roughly 12×. `2-COLLECT.bat` attempts a repair from the venue. On the supplied
+database it finds **no matches** — those markets are not in the venue's public
+catalogue — which the step states on screen. See `docs/ENGINE-LIMITS.md` §2.
 
 **3. This dataset has a large favourite–longshot bias.** Buying anything in the
 0.60–0.80 band earns roughly +9 points of expectancy while copying nobody at
