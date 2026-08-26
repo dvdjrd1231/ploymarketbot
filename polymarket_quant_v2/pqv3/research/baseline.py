@@ -61,6 +61,7 @@ class MatchedBaseline:
     lo: int = 0
     hi: int = 0
     raw_mean: float = 0.0
+    side: str = "YES"
 
     def excess(self, i: float) -> float | None:
         """Leave-one-out excess for one row, or None if not comparable."""
@@ -83,7 +84,8 @@ class MatchedBaseline:
 
     def describe(self) -> dict:
         usable = sum(n for n in self.counts.values() if n >= MIN_BUCKET)
-        return {"rows": len(self.ret), "buckets": len(self.counts),
+        return {"rows": len(self.ret), "side": self.side,
+                "buckets": len(self.counts),
                 "comparable_rows": usable,
                 "raw_mean_return": round(self.raw_mean, 6),
                 "min_bucket": MIN_BUCKET,
@@ -93,24 +95,35 @@ class MatchedBaseline:
 
 
 def build(m: Matrix, st: Settings, lo: int, hi: int,
-          rows=None) -> MatchedBaseline:
+          rows=None, side: str = "YES") -> MatchedBaseline:
     """Pools built from EVERY observation in the window.
 
     Not only the rows a rule admits — the baseline must describe what was
     available to anyone trading that band in that week, including the trades
     the rule declined.
+
+    `side` selects which contract is being bought. On a binary market the
+    complement is a real, exactly-priced instrument: buying NO at (1-p) pays
+    ((1-resolution) - (1-p)) / (1-p). The inversion lab needs that side scored
+    against OTHER NO positions in the same band — a NO at 0.30 is a longshot
+    and must not be compared against a YES at 0.30's peers, which are a
+    different population. Getting this wrong would manufacture the exact
+    favourite-longshot artefact the matched baseline exists to remove.
     """
     mb = MatchedBaseline(lo=lo, hi=hi)
     cost = 1.0 + (st.costs.slippage_bps + st.costs.fee_bps) / 10_000.0
     price = m.cols["price"]
     total = 0.0
     it = range(lo, hi) if rows is None else rows
+    inverted = side.upper() == "NO"
     for i in it:
-        p = price[i] * cost
+        raw = (1.0 - price[i]) if inverted else price[i]
+        outcome = (1.0 - m.resolution[i]) if inverted else m.resolution[i]
+        p = raw * cost
         if not (0 < p < 1):
             continue
-        r = (m.resolution[i] - p) / p
-        b = (band_index(m.cols["price"][i]), m.ts[i] // WEEK)
+        r = (outcome - p) / p
+        b = (band_index(raw), m.ts[i] // WEEK)
         mb.ret[i] = r
         mb.bucket[i] = b
         mb.sums[b] = mb.sums.get(b, 0.0) + r
@@ -118,4 +131,5 @@ def build(m: Matrix, st: Settings, lo: int, hi: int,
         total += r
     if mb.ret:
         mb.raw_mean = total / len(mb.ret)
+    mb.side = side.upper()
     return mb

@@ -235,6 +235,25 @@ class Api:
                 "note": self._note(rows, "strategies",
                                    "run `pqv3 discover`")}
 
+    def _inversion(self) -> dict:
+        """Latest inversion pass, read back from the store."""
+        import json as _json
+        rows = self.store.query(
+            "SELECT * FROM research_passes ORDER BY started_ts DESC LIMIT 20")
+        for r in rows:
+            d = _json.loads(r["detail"] or "{}")
+            if d.get("kind") == "inversion":
+                hyp = self.store.query(
+                    "SELECT statement, outcome, p_value, effect, n, params "
+                    "  FROM hypotheses WHERE pass_id=? "
+                    " ORDER BY effect DESC LIMIT 60", (r["pass_id"],))
+                return {"pass_id": r["pass_id"], "by_verdict":
+                        d.get("by_verdict", {}), "notes": d.get("notes", []),
+                        "bh_threshold": r["bh_threshold"],
+                        "tests": r["tested"], "conditions": r["distinct_tested"],
+                        "readings": hyp}
+        return {}
+
     def discovery(self) -> dict:
         import json as _json
         passes = self.store.query(
@@ -254,6 +273,7 @@ class Api:
                 "finding_groups": latest.get("finding_groups") or [],
                 "screen": latest.get("screen") or {},
                 "pass_notes": latest.get("notes") or [],
+                "inversion": self._inversion(),
                 "inert_features": (latest.get("search_space") or {}).get(
                     "inert_features") or [],
                 "note": self._note(

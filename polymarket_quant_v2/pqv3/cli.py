@@ -736,6 +736,59 @@ def cmd_signals(args, st: Settings) -> int:
     return 0
 
 
+
+def cmd_invert(args, st: Settings) -> int:
+    """Are the gates protecting the account, or throwing money away?"""
+    from .core.store import Store
+    from .research import inversion
+    store = Store(st)
+    res = inversion.run(st, store, window=args.window,
+                        include_gates=not args.strategies_only,
+                        include_strategies=not args.gates_only,
+                        progress=(lambda m: print(f"  {m}", flush=True))
+                        if args.verbose else None)
+    _hr(f"SIGNAL INVERSION PASS {res.pass_id}")
+    _kv("conditions interrogated", _fmt(res.conditions))
+    _kv("interpretation tests", _fmt(res.tests))
+    _kv("BH threshold", f"{res.bh_threshold:.4g}")
+    _kv("elapsed", f"{res.elapsed_secs}s")
+    for n in res.notes:
+        print(f"\n  note: {n}")
+
+    if res.by_verdict:
+        _hr("VERDICTS")
+        for k, v in sorted(res.by_verdict.items(), key=lambda kv: -kv[1]):
+            _kv(k, _fmt(v))
+
+    _hr("CONDITION BY CONDITION")
+    for v in res.verdicts[:args.top]:
+        o = v.readings.get("ORIGINAL")
+        i = v.readings.get("INVERTED")
+        print(f"\n  [{v.verdict}] {v.condition}")
+        print(f"    {v.statement[:96]}")
+        if o and i:
+            print(f"    {'':14}{'n':>8}{'expectancy':>13}{'matched':>11}"
+                  f"{'win':>8}{'p':>12}")
+            for nm, r in (("as signalled", o), ("inverted", i)):
+                print(f"    {nm:<14}{r.n:>8,}{r.expectancy:>+13.5f}"
+                      f"{r.matched_excess:>+11.5f}{r.win_rate:>8.1%}"
+                      f"{_p(r.p_value):>12}")
+        print(f"    -> {v.block_assessment}")
+        print(f"       {v.detail[:220]}")
+
+    _hr("WHAT THIS DOES AND DOES NOT SHOW")
+    print("  Outcomes are never edited. 'Inverted' buys the COMPLEMENT")
+    print("  contract, which is a real instrument with an exact payoff, and")
+    print("  pays the same costs. Each side is compared only against other")
+    print("  positions in its own price band and week, so an inversion cannot")
+    print("  score well merely by turning longshots into favourites.")
+    print()
+    print("  A verdict of BLOCK_TOO_STRICT is a research finding, not an")
+    print("  instruction to unblock. It becomes a strategy only by going")
+    print("  through `pqv3 discover` like anything else.")
+    return 0
+
+
 # ------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -853,6 +906,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--limit", type=int, default=10)
     s.add_argument("--decide", type=int, default=0,
                    help="run full decisions on the top N signals")
+
+    s = add("invert", cmd_invert,
+            help="test whether blocking signals are actually predictive")
+    s.add_argument("--window", default="oos", choices=("oos", "is"))
+    s.add_argument("--top", type=int, default=12)
+    s.add_argument("--gates-only", action="store_true")
+    s.add_argument("--strategies-only", action="store_true")
+    s.add_argument("-v", "--verbose", action="store_true")
 
     add("selftest", cmd_selftest, help="check the installation")
     return p

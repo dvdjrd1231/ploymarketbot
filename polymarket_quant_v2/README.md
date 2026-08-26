@@ -104,7 +104,7 @@ every *other* wallet in the same band and week.
 
 ---
 
-## The five controls that make results interpretable
+## The six controls that make results interpretable
 
 **1. Point-in-time or nothing.** `get_information_state(timestamp, market_id)`
 reconstructs the whole information environment at a timestamp. Every layer is
@@ -124,7 +124,15 @@ whose hypothesis count was not recorded.
 conviction, the candidate dies — otherwise a sufficiently enthusiastic majority
 could always outvote it.
 
-**5. Alpha is measured against a price-band-matched baseline.** Returns are
+**5. The gates are audited, not trusted.** `pqv3 invert` scores every blocking
+condition four ways on the same rows — as signalled, inverted (buying the
+COMPLEMENT contract, a real instrument with an exact payoff), stood aside, and
+a coin flip — then reports whether the block was correct, too strict, or
+carries information pointing the other way. Outcomes are never edited, costs
+are charged on both sides, and each side is compared against its own price band
+so an inversion cannot score well merely by turning longshots into favourites.
+
+**6. Alpha is measured against a price-band-matched baseline.** Returns are
 `(resolution − p)/p`, so a winning longshot pays +19 and a winning favourite
 +0.11. Against a raw baseline, any rule that avoids longshots looks
 spectacular — the first run of this system scored `price >= 0.53` at +0.50
@@ -165,6 +173,13 @@ API payload and the rendered dashboard for it.
   only entry price and outcome. Every validated strategy carries this caveat
   on its own record.
 - `VALIDATED` authorises paper trading. Nothing has been promoted past it.
+- **The gates were previously refusing everything for a definitional reason.**
+  16 validated strategies sat in the store while `decide()` was called with
+  `strategy={}`, so the two research gates failed on every candidate by
+  construction. Fixed: `scanner/signals.py` fires validated strategies over the
+  wallet observations they were discovered on. Candidates are now refused for
+  substantive reasons — edge inside the cost floor, negative EV after costs —
+  which is the real answer to "why zero trades".
 - **Neither Rust crate has been compiled** — no toolchain on the build machine.
   The Python reference kernels are authoritative and fully tested; the Rust
   equivalence tests skip with a stated reason rather than passing silently.
