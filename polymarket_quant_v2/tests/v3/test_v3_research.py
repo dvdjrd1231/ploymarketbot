@@ -381,3 +381,74 @@ def test_promotion_to_live_requires_a_human(store):
     assert not blocked["ok"] and "human" in blocked["error"]
     ok = validate.promote(store, "s1", to="LIVE", actor="human")
     assert ok["ok"]
+
+
+# ------------------------------------------------- V2/V3 driver equivalence
+def test_v3_driver_matches_v2_stream(tape):
+    """The safety property behind reusing V2's state machine with a new driver.
+
+    V3 supplies the loop, the heap and the row source so that repaired
+    settlement timestamps actually reach the research pass. That is only reuse
+    rather than a fork if, with NO overrides present, it reproduces V2's own
+    stream exactly.
+    """
+    from pqv3.bootstrap import ensure_v2_importable
+    if not ensure_v2_importable():
+        pytest.skip("pqv2 not importable")
+    from pqv2.config import Settings as V2Settings
+    from pqv2.substrate.state import stream_observations
+    from pqv3.research.matrix import stream_observations_v3
+
+    s2 = V2Settings()
+    s2.data_db = tape.data_db
+    s2.costs.min_price = tape.costs.min_price
+    s2.costs.max_price = tape.costs.max_price
+
+    v2 = list(stream_observations(s2, min_notional=1.0))
+    v3 = list(stream_observations_v3(tape, None, min_notional=1.0))
+    assert len(v2) == len(v3) and v2, f"{len(v2)} vs {len(v3)} observations"
+
+    from pqv3.research.matrix import FEATURES
+    for a, b in zip(v2, v3):
+        assert a.trade.ts == b.trade.ts
+        assert a.trade.token_id == b.trade.token_id
+        for f in FEATURES:
+            assert getattr(a, f) == pytest.approx(getattr(b, f)), (
+                f"feature {f} diverged at ts={a.trade.ts}")
+
+
+def test_repaired_settlement_reaches_the_matrix(tape, store):
+    """A repair must change what the causal pass produces, or it is cosmetic."""
+    from pqv3.research.matrix import stream_observations_v3
+    before = list(stream_observations_v3(tape, store, min_notional=1.0))
+    assert before
+
+    # Plant a trustworthy settlement time far earlier than V1's fallback.
+    earliest = min(o.trade.ts for o in before)
+    store.insert("resolution_times", [
+        {"token_id": "TOK_A", "settled_ts": earliest + 60,
+         "method": "VENUE_REPORTED", "confidence": 1.0}], source="test")
+
+    after = list(stream_observations_v3(tape, store, min_notional=1.0))
+    assert len(after) == len(before)
+    changed = [(a, b) for a, b in zip(before, after)
+               if a.secs_to_settle != b.secs_to_settle]
+    assert changed, ("the repaired settlement timestamp did not reach the "
+                     "observation stream")
+
+
+def test_matrix_cache_is_invalidated_by_a_repair(tape, store):
+    """Otherwise `collect --backfill-settled` improves data `discover` ignores."""
+    from pqv3.research.matrix import build, data_fingerprint
+    m1 = build(tape, store)
+    fp1 = data_fingerprint(tape, store)
+    assert m1.fingerprint == fp1
+
+    store.insert("resolution_times", [
+        {"token_id": "TOK_B", "settled_ts": 1_700_000_500,
+         "method": "VENUE_REPORTED", "confidence": 1.0}], source="test")
+    fp2 = data_fingerprint(tape, store)
+    assert fp2 != fp1, "a repair did not move the fingerprint"
+
+    m2 = build(tape, store)
+    assert m2.fingerprint == fp2, "the stale cache was returned after a repair"

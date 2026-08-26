@@ -401,8 +401,14 @@ def cmd_discover(args, st: Settings) -> int:
                        screen_top=args.screen_top,
                        max_hypotheses=args.max_hypotheses,
                        rebuild_matrix=args.rebuild,
+                       if_changed=args.if_changed,
                        progress=(lambda m: print(f"  {m}", flush=True))
                        if args.verbose else None)
+    if res.skipped:
+        _hr("DISCOVERY SKIPPED")
+        for n in res.notes:
+            print(f"  {n}")
+        return 0
     _hr(f"DISCOVERY PASS {res.pass_id}")
     _kv("elapsed", f"{res.elapsed_secs}s")
     _kv("observations", _fmt(res.matrix.get("rows")))
@@ -462,7 +468,7 @@ def cmd_backtest(args, st: Settings) -> int:
         print(f"unknown strategy {args.strategy_id!r}. "
               f"List them with `pqv3 strategies`.")
         return 2
-    m = build(st)
+    m = build(st, store)
     split = m.split_ts(st.research.oos_fraction)
     lo, hi = m.index_range(split, 0)
     _hr(f"BACKTEST {h.hypothesis_id}")
@@ -500,7 +506,7 @@ def cmd_walkforward(args, st: Settings) -> int:
     if h is None:
         print(f"unknown strategy {args.strategy_id!r}")
         return 2
-    m = build(st)
+    m = build(st, store)
     wf = walkforward.run(m, h, st, schedule=args.schedule)
     _hr(f"WALK-FORWARD ({wf.schedule})")
     print(f"  {h.statement}\n")
@@ -732,6 +738,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--top", type=int, default=10)
     s.add_argument("--rebuild", action="store_true",
                    help="rebuild the observation matrix from the tape")
+    s.add_argument("--if-changed", action="store_true",
+                   help="skip if the inputs are identical to the last pass")
     s.add_argument("-v", "--verbose", action="store_true")
 
     s = add("backtest", cmd_backtest,

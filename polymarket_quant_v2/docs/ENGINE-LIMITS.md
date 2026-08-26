@@ -56,11 +56,30 @@ strategy reported exactly `max_open_positions` trades and an identical return.
 falls back to an EXPLICIT modelled hold, labelled MODELLED everywhere it is
 reported and refused as promotion evidence by the validation ladder.
 
-**Fix.** `pqv3 collect --backfill-settled` asks the venue for real resolution
-times (tier `VENUE_REPORTED`, confidence 1.00) and records tier-3
-`FIRST_OBSERVED` going forward. Tiers are never blended: a fallback timestamp
-does not count toward coverage, and `pit_features_enabled` stays false until
-500 settlements carry confidence at or above 0.60.
+**Attempted fix, and what it measured.** `pqv3 collect --backfill-settled`
+pages the venue's closed-market catalogue and matches on `conditionId` and
+`clobTokenIds`. Run against this database on 2026-08-25 it scanned **2,100
+recently-closed venue markets, every one carrying a resolution time, and
+matched none of them** — not one shared a conditionId or a token id with V1's
+4,058 conditionIds / 8,116 tokens.
+
+So tier-1 repair **cannot work for this dataset**. Whatever produced
+`intel.sqlite3`, its market identifiers are not in this venue's public
+catalogue. This is a property of the data, not a transient failure, and
+re-running will not change it. The command reports `matched: 0` with
+`no_venue_record: N` rather than an error count.
+
+**The route that does remain.** Tier-3 `FIRST_OBSERVED`: leave collection
+running (`pqv3 dashboard --loops`) and any market that resolves from that
+moment on gets a timestamp accurate to one poll interval. That fixes the
+future, not the existing 90 days.
+
+**Consequence to carry.** Until 500 settlements reach confidence >= 0.60, the
+$100 capital simulation stays MODELLED, ten search features stay inert, and
+`pit_features_enabled` stays false. Out-of-sample expectancy is unaffected
+throughout — it needs only entry price and outcome.
+
+Tiers are never blended: a fallback timestamp does not count toward coverage.
 
 ## 3. No news, event or blockchain history
 

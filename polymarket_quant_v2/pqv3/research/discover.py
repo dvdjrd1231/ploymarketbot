@@ -53,15 +53,30 @@ class PassResult:
     top: list = field(default_factory=list)
     notes: list = field(default_factory=list)
     elapsed_secs: float = 0.0
+    fingerprint: dict = field(default_factory=dict)
+    skipped: bool = False
 
     def to_dict(self) -> dict:
         return self.__dict__.copy()
 
 
+def last_fingerprint(store) -> dict:
+    """The data state the most recent completed pass was computed from."""
+    import json as _json
+    row = store.one("SELECT detail FROM research_passes "
+                    "ORDER BY started_ts DESC LIMIT 1")
+    if not row:
+        return {}
+    try:
+        return (_json.loads(row["detail"] or "{}") or {}).get("fingerprint") or {}
+    except Exception:                                         # noqa: BLE001
+        return {}
+
+
 def run(st: Settings, store, *, depth: int = 2, max_hypotheses: int = 20_000,
         screen_top: int = 300, min_screen_n: int = 25, families: tuple = (),
-        rebuild_matrix: bool = False, progress=None, limit_rows: int = 0
-        ) -> PassResult:
+        rebuild_matrix: bool = False, progress=None, limit_rows: int = 0,
+        if_changed: bool = False) -> PassResult:
     t0 = time.perf_counter()
     res = PassResult(pass_id=uuid.uuid4().hex[:16], started_ts=int(time.time()))
 
@@ -69,9 +84,34 @@ def run(st: Settings, store, *, depth: int = 2, max_hypotheses: int = 20_000,
         if progress:
             progress(msg)
 
+    # -- 0. is there anything new to learn from? --------------------------
+    # A pass takes minutes. Re-running it against unchanged inputs reproduces
+    # its own previous answer exactly, so `--if-changed` makes it safe to wire
+    # discovery into a routine that runs after every collection.
+    from .matrix import data_fingerprint
+    res.fingerprint = data_fingerprint(st, store)
+    if if_changed:
+        prev = last_fingerprint(store)
+        if prev and prev == res.fingerprint:
+            res.skipped = True
+            res.notes.append(
+                "SKIPPED: the inputs are byte-for-byte what the last pass "
+                "already searched — same tape, same settlement coverage, same "
+                "market metadata, same costs. Re-running would reproduce the "
+                "previous answer. Use `pqv3 discover` without --if-changed to "
+                "force it.")
+            res.elapsed_secs = round(time.perf_counter() - t0, 2)
+            return res
+        if prev:
+            diffs = [k for k in res.fingerprint
+                     if prev.get(k) != res.fingerprint.get(k)]
+            res.notes.append(
+                f"inputs changed since the last pass ({', '.join(diffs)}); "
+                f"re-running")
+
     # -- 1. materialise the causal observation matrix ----------------------
     say("materialising the observation matrix (one causal pass over the tape)")
-    m: Matrix = build(st, rebuild=rebuild_matrix, limit=limit_rows)
+    m: Matrix = build(st, store, rebuild=rebuild_matrix, limit=limit_rows)
     res.matrix = m.describe()
     if m.n < 200:
         res.notes.append(f"only {m.n} evaluable observations; a discovery pass "
@@ -308,6 +348,7 @@ def _persist_pass(store, res: PassResult) -> None:
                    "evaluated_oos": res.evaluated_oos,
                    "bh_significant": res.bh_significant,
                    "by_status": res.by_status, "notes": res.notes,
+                   "fingerprint": res.fingerprint,
                    "distinct_findings": res.distinct_findings,
                    "finding_groups": res.finding_groups,
                    "elapsed_secs": res.elapsed_secs},
