@@ -66,6 +66,8 @@ class Engine:
         self.wallet_dna: dict = {}
         self.wallet_graph = None
         self.last_scan = None
+        self.last_signals: list = []
+        self.last_funnel: dict = {}
         self.last_crash: CrashReading | None = None
         self.last_backtest: dict | None = None
         self.startup: list = []
@@ -284,9 +286,21 @@ class Engine:
             self._stop.wait(interval)
 
     def _research_loop(self) -> None:
-        """SCAN -> ANALYZE -> DEBATE -> LEARN, once per interval."""
+        """SCAN -> ANALYZE -> DEBATE -> LEARN, once per interval.
+
+        Two candidate sources, deliberately kept apart:
+
+          * validated STRATEGY SIGNALS — wallet observations a validated
+            strategy selected. These carry the strategy record, so the research
+            gates can actually judge them.
+          * the market SCANNER — broad surveillance. Its candidates have no
+            strategy record and are expected to be refused by
+            STATISTICAL_VALIDITY. They are still recorded, because a market
+            nobody has a strategy for is a research finding, not a bug.
+        """
         if not self.source.available:
             return
+        self._strategy_signals()
         self.last_scan = self.scanner.scan(wallet_dna=self.wallet_dna, top_n=15)
         self.store.set_meta("last_scan_markets",
                             str(self.last_scan.markets_scanned))
@@ -308,6 +322,41 @@ class Engine:
         self.store.record_health("loop:research", "OK", success=True,
                                  detail=f"{self.last_scan.markets_scanned} "
                                         f"markets")
+
+    def _strategy_signals(self) -> None:
+        """Decide on candidates that a VALIDATED strategy actually selected."""
+        try:
+            from .research.matrix import build
+            from .scanner.signals import StrategyMatcher
+            matcher = StrategyMatcher(self.st, self.store)
+            if not matcher.available:
+                self.store.record_health(
+                    "loop:signals", "OK", success=True,
+                    detail="no VALIDATED strategy at PAPER or beyond; "
+                           "run `pqv3 discover`")
+                return
+            m = build(self.st, self.store)
+            split = m.split_ts(self.st.research.oos_fraction)
+            lo, hi = m.index_range(split, 0)
+            sigs = matcher.match(m, lo=lo, hi=hi, limit=10)
+            self.last_signals = sigs
+            self.last_funnel = matcher.funnel(m, lo=lo, hi=hi)
+            for sg in sigs[:5]:
+                d = self.decision.decide(
+                    market_id=sg.market_id, token_id=sg.token_id,
+                    as_of=sg.ts, strategy=sg.strategy,
+                    wallet_dna=self.wallet_dna)
+                if d.crash:
+                    self.last_crash = d.crash
+                if d.will_trade and self.st.mode in (Mode.PAPER, Mode.SHADOW):
+                    self._record_paper(d)
+            self.store.record_health(
+                "loop:signals", "OK", success=True,
+                detail=f"{len(sigs)} signal(s) from "
+                       f"{len(matcher.strategies)} validated strategy(ies)")
+        except Exception as e:                                # noqa: BLE001
+            self.store.record_health("loop:signals", "ERROR",
+                                     error=f"{type(e).__name__}: {e}")
 
     def _collector_loop(self) -> None:
         if not self.st.collectors.enabled:

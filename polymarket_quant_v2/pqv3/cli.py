@@ -663,6 +663,79 @@ def cmd_online(args, st: Settings) -> int:
     return 0
 
 
+
+def cmd_signals(args, st: Settings) -> int:
+    """Where candidates actually go — the funnel, not just 'no trade'."""
+    from .core.store import Store
+    from .research.matrix import build
+    from .scanner.signals import StrategyMatcher, live_gap
+    store = Store(st)
+    matcher = StrategyMatcher(st, store)
+
+    _hr("VALIDATED STRATEGIES LOADED")
+    if not matcher.available:
+        print("  none. A strategy must be VALIDATED and at PAPER or beyond.")
+        print("  Run `pqv3 discover`, then `pqv3 strategies`.")
+        return 0
+    for h, rec in matcher.strategies[:args.top]:
+        print(f"  {rec['strategy_id']}  [{rec['status']}]  "
+              f"{rec['evidence_quality']}")
+        print(f"    {rec['statement'][:96]}")
+
+    m = build(st, store)
+    split = m.split_ts(st.research.oos_fraction)
+    lo, hi = m.index_range(split, 0)
+
+    _hr("PIPELINE FUNNEL (out-of-sample window)")
+    f = matcher.funnel(m, lo=lo, hi=hi)
+    for k in ("observations", "strategies_loaded", "selected",
+              "selection_rate", "distinct_markets", "distinct_wallets"):
+        _kv(k, _fmt(f.get(k)))
+    if f.get("note"):
+        print(f"\n  {f['note']}")
+    if f.get("by_strategy"):
+        print()
+        for sid, n in f["by_strategy"].items():
+            print(f"    {sid}  fired {n:,} times")
+
+    sigs = matcher.match(m, lo=lo, hi=hi, limit=args.limit)
+    _hr(f"MOST RECENT SIGNALS ({len(sigs)})")
+    for sg in sigs[:args.limit]:
+        print(f"  ts={sg.ts}  px={sg.price:.4f}  wallet={sg.wallet[:12]} "
+              f"market={sg.market_id[:16]}")
+        print(f"    via {sg.strategy_id}: {sg.statement[:80]}")
+
+    if args.decide and sigs:
+        from .decision.decide import DecisionEngine
+        from .intelligence.wallets import WalletIntelligence
+        from .core.source import HistoricalSource
+        src = HistoricalSource(st)
+        dna = WalletIntelligence(st, src).build(max_wallets=40)
+        eng = DecisionEngine(st, store, source=src)
+        _hr(f"FULL DECISION on the top {min(args.decide, len(sigs))} signals")
+        print("  These now carry a VALIDATED strategy record, so the research")
+        print("  gates are answering a question about evidence that covers")
+        print("  them - which was never true before.\n")
+        for sg in sigs[:args.decide]:
+            d = eng.decide(market_id=sg.market_id, token_id=sg.token_id,
+                           as_of=sg.ts, strategy=sg.strategy, wallet_dna=dna)
+            print(f"  {sg.statement[:70]}")
+            _kv("action", d.action)
+            _kv("blocking gate", d.blocking_gate or "none")
+            if d.gates:
+                for g in d.gates.blocking:
+                    print(f"        [{g.gate}] {g.reason[:110]}")
+            print()
+
+    _hr("WHAT STANDS BETWEEN THIS AND LIVE")
+    gap = live_gap(st, store)
+    for b in gap["blocks_for_live"]:
+        print(f"  [{'ok ' if b['have'] else 'NO '}] {b['item']}")
+        print(f"        {b['detail']}")
+    print(f"\n  {gap['note']}")
+    return 0
+
+
 # ------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -773,6 +846,13 @@ def build_parser() -> argparse.ArgumentParser:
     s = add("online", cmd_online, help="online learning weights")
     s.add_argument("--update", action="store_true")
     s.add_argument("--reset", action="store_true")
+
+    s = add("signals", cmd_signals,
+            help="validated strategies -> candidates, with the funnel")
+    s.add_argument("--top", type=int, default=8)
+    s.add_argument("--limit", type=int, default=10)
+    s.add_argument("--decide", type=int, default=0,
+                   help="run full decisions on the top N signals")
 
     add("selftest", cmd_selftest, help="check the installation")
     return p
