@@ -357,6 +357,32 @@ CREATE TABLE IF NOT EXISTS documents (
     ts INTEGER NOT NULL, capture_ts INTEGER NOT NULL, source TEXT NOT NULL,
     data_version INTEGER NOT NULL, schema_version INTEGER NOT NULL);
 
+-- §6/§31. Every tool call the autonomous engineer made, with its arguments
+-- and its result. This is how "what did the AI change" is answered from the
+-- store rather than from anyone's recollection, and it is the audit trail that
+-- makes handing an agent write access to the project reviewable after the fact.
+CREATE TABLE IF NOT EXISTS agent_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool TEXT NOT NULL, args TEXT NOT NULL DEFAULT '{}',
+    ok INTEGER NOT NULL DEFAULT 1, result TEXT NOT NULL DEFAULT '',
+    elapsed_ms INTEGER NOT NULL DEFAULT 0,
+    checkpoint_id TEXT NOT NULL DEFAULT '',
+    ts INTEGER NOT NULL, capture_ts INTEGER NOT NULL, source TEXT NOT NULL,
+    data_version INTEGER NOT NULL, schema_version INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_agent_action_ts ON agent_actions(ts);
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    objective TEXT NOT NULL, finished INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '', answer TEXT NOT NULL DEFAULT '',
+    steps INTEGER NOT NULL DEFAULT 0,
+    files_changed TEXT NOT NULL DEFAULT '[]',
+    checkpoint_id TEXT NOT NULL DEFAULT '',
+    tests_passed INTEGER NOT NULL DEFAULT 0,
+    model TEXT NOT NULL DEFAULT '', elapsed_ms INTEGER NOT NULL DEFAULT 0,
+    ts INTEGER NOT NULL, capture_ts INTEGER NOT NULL, source TEXT NOT NULL,
+    data_version INTEGER NOT NULL, schema_version INTEGER NOT NULL);
+
 -- §31. A checkpoint is a JOIN of the git commit and the store state at one
 -- instant, plus the objective a human stated for the work that followed. Git
 -- already versions the code better than a bespoke table could; what it cannot

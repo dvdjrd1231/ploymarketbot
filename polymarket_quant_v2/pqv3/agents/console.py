@@ -70,7 +70,7 @@ MAX_SURFACED_PENDING = 5
 MODE_PATTERNS: tuple[tuple[str, str, str], ...] = (
     ("DOCUMENT",
      r"[\w./\\~-]+\.(txt|md|markdown|rst|csv|tsv|json|docx|xlsx|pdf|doc|xls|"
-     r"log|py|yaml|yml|html|xml)\b",
+     r"log|py|yaml|yml|html|xml|png|jpg|jpeg|gif|webp|bmp)\b",
      "names a file, so the §29 document-to-system pipeline runs on it"),
     ("EXECUTION",
      r"\b(run|execute|start|launch|trade now|place (an? )?order|go live|"
@@ -271,6 +271,7 @@ class Reply:
     diagnosis: list = field(default_factory=list)
     plan: list = field(default_factory=list)
     document: dict = field(default_factory=dict)
+    agent: dict = field(default_factory=dict)
     surfaced: list = field(default_factory=list)
     actions: list = field(default_factory=list)
     cannot: list = field(default_factory=list)
@@ -301,9 +302,40 @@ class Console:
     def classify(self, text: str) -> tuple[str, str]:
         t = text.lower()
         for mode, pattern, reason in MODE_PATTERNS:
-            if re.search(pattern, t, re.I):
-                return mode, reason
+            if not re.search(pattern, t, re.I):
+                continue
+            if mode == "DOCUMENT" and not self._is_ingestion(text):
+                # "add a module called scanner.py" names a file and is an
+                # instruction to WRITE one, not a document to read. A filename
+                # alone cannot decide this, and getting it wrong sends an
+                # engineering job to the extraction pipeline, which then
+                # reports "no such file" and does nothing.
+                continue
+            return mode, reason
         return "RESEARCH", "no explicit instruction verb; read as a question"
+
+    # Verbs that mean "produce this file", as opposed to "read this file".
+    _MAKES_FILE = re.compile(
+        r"\b(add|create|make|write|build|generate|new|rewrite|refactor|"
+        r"implement|rename|move|delete|remove|fix|modify|change|edit|call(ed)?|"
+        r"name[sd]?)\b", re.I)
+
+    def _is_ingestion(self, text: str) -> bool:
+        """Is the named file something to READ, or something to WORK ON?
+
+        The verb decides, and whether the file exists is deliberately not
+        consulted. Existence was tried first and was wrong: "rewrite
+        pqv3/scanner/signals.py" names a file that is very much there, and
+        routing it to the extraction pipeline because of that turned an
+        engineering job into a document summary.
+
+        With no engineering verb, ingestion wins whether the path exists or
+        not — so a mistyped document path reports "could not read that"
+        instead of silently becoming a research question.
+        """
+        if not self.find_path(text):
+            return False
+        return not self._MAKES_FILE.search(text)
 
     def topics(self, text: str) -> list[str]:
         t = text.lower()
@@ -741,7 +773,8 @@ class Console:
     _PATH = re.compile(
         r"""["'`]([^"'`\n]+\.[A-Za-z0-9]{1,9})["'`]"""
         r"""|(\S*[\w\-]\.(?:txt|md|markdown|rst|csv|tsv|json|docx|xlsx|pdf|"""
-        r"""doc|xls|log|py|yaml|yml|html|xml))(?=[\s,;:)\]!?]|\.|$)""",
+        r"""doc|xls|log|py|yaml|yml|html|xml|png|jpg|jpeg|gif|webp|bmp))"""
+        r"""(?=[\s,;:)\]!?]|\.|$)""",
         re.I)
 
     def find_path(self, text: str) -> str:
@@ -761,7 +794,7 @@ class Console:
         """
         from . import documents
 
-        d = documents.ingest(path)
+        d = documents.ingest(path, self.st)
         try:
             self.store.insert("documents", [{
                 "path": d.path, "kind": d.kind, "ok": int(d.ok),
@@ -831,7 +864,7 @@ class Console:
 
     # ---------------------------------------------------------------- ask
     def ask(self, text: str, *, run: str = "", confirm: str = "",
-            narrate: bool = True) -> dict:
+            narrate: bool = True, no_act: bool = False) -> dict:
         t0 = time.perf_counter()
         text = (text or "").strip()
         if not text:
@@ -938,16 +971,44 @@ class Console:
                 r.actions.append(hv["action"])
 
         elif mode in ("ENGINEERING",):
-            r.plan = self.plan(text, topics)
+            # §2: "Do NOT merely respond with instructions telling the user how
+            # to make the change." If a model is configured, the agent does the
+            # work. The plan is what remains when there is nothing to drive it.
+            from .autonomy import Agent, status as agent_status
+            ast = agent_status(self.st)
             files = [f["path"] for f in self.locate(topics) if f["exists"]]
-            r.finding = [
-                f"Read as an engineering instruction over {', '.join(topics)}.",
-                f"The behaviour lives in: {', '.join(files) or 'no mapped file'}.",
-                "This installation can locate, diagnose, plan and test. It "
-                "cannot write to a source file — see `cannot` below. That is "
-                "stated rather than worked around, because §41 makes claiming "
-                "a capability the one thing this system may never do."]
-            r.charter = [doctrine.cite(27), doctrine.cite(6), doctrine.cite(41)]
+
+            if ast["available"] and self.st.agents.agent_auto and not no_act:
+                sess = Agent(self.st, self.store).run(
+                    text,
+                    context=(f"Files that carry this behaviour: "
+                             f"{', '.join(files)}" if files else ""))
+                r.agent = sess.to_dict()
+                r.finding = [
+                    f"Ran the engineering objective with {sess.model} over "
+                    f"{len(sess.steps)} step(s).",
+                    sess.answer or sess.reason,
+                    (f"Changed {len(sess.files_changed)} file(s): "
+                     f"{', '.join(sess.files_changed)}."
+                     if sess.files_changed else "No file was changed."),
+                    (f"Test suite: "
+                     f"{'PASSED' if sess.tests.get('passed') else 'FAILED'}."
+                     if sess.tests.get("ran") else
+                     "The test suite was not run in this session."),
+                    f"Rollback: {sess.rollback}"]
+                if sess.note:
+                    r.finding.append(sess.note)
+            else:
+                r.plan = self.plan(text, topics)
+                r.finding = [
+                    f"Read as an engineering instruction over "
+                    f"{', '.join(topics)}.",
+                    f"The behaviour lives in: "
+                    f"{', '.join(files) or 'no mapped file'}.",
+                    ("The agent is available but auto-execution is off "
+                     "(PQV3_AGENT_AUTO=0), so this is the plan only."
+                     if ast["available"] else ast["note"])]
+            r.charter = [doctrine.cite(27), doctrine.cite(6), doctrine.cite(2)]
 
         elif mode == "BACKTEST":
             r.finding = [

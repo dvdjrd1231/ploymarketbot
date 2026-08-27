@@ -88,14 +88,18 @@ def test_reads_xlsx(tmp_path):
     assert d.ok and d.tables == [["wallet", "0.14"], ["0xabc", "0.02"]]
 
 
-def test_pdf_is_refused_by_name_not_guessed_at(tmp_path):
-    """§41: plausible-looking garbage is worse than a refusal."""
+def test_pdf_is_read_now_and_a_broken_one_says_why(tmp_path):
+    """PDFs are extracted (see test_v3_pdf.py); malformed ones still refuse.
+
+    This test previously asserted a blanket refusal. That refusal was wrong —
+    text extraction needs `zlib`, which is stdlib — and it is now only the
+    genuinely unreadable cases that are declined, each by name.
+    """
     p = tmp_path / "paper.pdf"
-    p.write_bytes(b"%PDF-1.4\n...binary...")
+    p.write_bytes(b"%PDF-1.4\n...no streams at all...")
     d = documents.read(str(p))
     assert not d.ok
-    assert "standard-library only" in d.error
-    assert ".docx" in d.error, "a refusal must carry the way forward"
+    assert "no text layer" in d.error and "OCR" in d.error
 
 
 def test_missing_file_says_so(tmp_path):
@@ -197,6 +201,18 @@ def test_quoted_path_with_spaces_is_found(st, tmp_path):
     p.write_text(NOTE, encoding="utf-8")
     con = Console(st, Store(st))
     assert con.find_path(f'analyse "{p}"') == str(p)
+
+
+def test_naming_a_file_to_create_is_not_a_document_to_read(st):
+    """"add a module called scanner.py" writes a file; it does not read one."""
+    con = Console(st, Store(st))
+    assert con.classify("add a module called scanner.py")[0] == "ENGINEERING"
+    assert con.classify("create tests/test_new.py")[0] == "ENGINEERING"
+    assert con.classify("rewrite pqv3/scanner/signals.py")[0] == "ENGINEERING"
+    # A path with no engineering verb is still an ingestion, even when the
+    # file is missing, so a typo reports "could not read" instead of vanishing
+    # into a research answer.
+    assert con.classify("look at notes/strategy.md")[0] == "DOCUMENT"
 
 
 def test_trailing_punctuation_is_not_part_of_the_path(st):

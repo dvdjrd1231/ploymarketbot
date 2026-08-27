@@ -93,10 +93,51 @@ reply walks INPUT → PROCESSING → STORAGE → MODEL → DECISION → UI, repo
 first link that breaks, and states explicitly that everything downstream of it
 is a consequence rather than a second fault.
 
-**It cannot edit your source, and it says so.** Ask it to fix a module and it
-locates the files, sizes them, plans the change and names the test — then
-tells you the modify step is not available here. That limit is published on
-the DOCTRINE page alongside the charter that authorises it.
+**It edits the program.** Ask it to fix a module and — with a model configured
+— it searches for the execution path, reads the files, makes the change, runs
+the test suite, reads its own failures and fixes them, then reports what it
+changed and how to undo it. §2 is explicit that the chat must not merely tell
+you how to make a change, and this is that clause implemented rather than
+described. See **The autonomous engineer** below.
+
+### The autonomous engineer
+
+State an objective; it does the work on this project.
+
+```
+pqv3 agent "the news collector is broken - find out why and fix it"
+pqv3 agent "add average hold time to the wallets page"
+pqv3 agent "find your weakest research step and improve it"
+pqv3 agent "..." --dry-run     show the diffs it would apply, write nothing
+pqv3 agent "..." --max-steps 120
+```
+
+Or type the same thing into the dashboard's CHAT page, or `6-ASK-THE-AI.bat`.
+
+It has real tools: `read_file`, `list_dir`, `search`, `write_file`,
+`edit_file`, `delete_file`, `run_tests`, `run_pqv3`, `git_status`, `git_diff`,
+`revert_file`. Your charter is its system prompt.
+
+**Requires a tool-capable model** at `PQV3_LLM_PROVIDER` / `_ENDPOINT` /
+`_MODEL` — Ollama or LM Studio on your own machine, or any OpenAI-compatible
+endpoint. Without one the loop has nothing to drive it and says so. Everything
+else in this system works either way; no figure on any page has ever come from
+a model.
+
+Four things hold regardless of what you ask it, and each is a clause of your
+own charter rather than caution added on top:
+
+- **It writes inside the project only** (§4). `..`, absolute paths and symlinks
+  pointing out of the tree are refused.
+- **A git checkpoint is taken before its first write** (§31). Not a gate — the
+  work proceeds — but every session ends with the command that undoes it.
+- **Every tool call is recorded** in `agent_actions` (§22, §31), so *what did
+  it change* is answered from the store, not from memory.
+- **`authorize-live` and `mode` are not tools** (§32). Omitted from the surface
+  entirely, so no phrasing can talk a model into them.
+
+The step budget (40, raise it freely) is a runaway guard, not a capability
+limit. Exhausting it reports an **unfinished** job, never a finished one.
 
 ### Documents in, candidates out
 

@@ -49,6 +49,10 @@ THE STEPS
 
   5-STOP-DASHBOARD.bat instant   Stops the background dashboard.
 
+  6-ASK-THE-AI.bat     instant   Talk to the intelligence built into
+                                 this system. Same thing as the
+                                 dashboard's CHAT page, in a window.
+
 
 ASKING IT THINGS
 ----------------------------------------------------------
@@ -81,8 +85,29 @@ that stopped, a loss run getting close to the stop limit -
 at the top of your next answer. Only things worth the
 interruption; the rest is filed under ACTIVITY.
 
-Two things it will not do, and will tell you so:
-edit the program's own files, or place an order.
+IT CAN ALSO CHANGE THE PROGRAM FOR YOU
+----------------------------------------------------------
+Everything above works with no internet and no AI account.
+If you connect a local model, the console gains the ability
+to do engineering work on this system - not describe it, do
+it:
+
+    the news collector is broken, find out why and fix it
+    add average hold time to the wallets page
+    find your weakest research step and improve it
+
+It opens the files, makes the change, runs the test suite,
+fixes its own mistakes, then tells you exactly what it
+changed and the one command that undoes all of it.
+
+To switch it on: install Ollama (ollama.com), run
+"ollama pull qwen2.5-coder:14b", then open 6-ASK-THE-AI.bat
+in Notepad and un-comment the four lines under MODEL SETUP.
+Any OpenAI-compatible endpoint works, local or remote.
+
+Whatever you ask it, it cannot place an order and cannot
+turn on live trading. Those stay separate, deliberate human
+actions.
 
 
 YOUR STARTING BANKROLL

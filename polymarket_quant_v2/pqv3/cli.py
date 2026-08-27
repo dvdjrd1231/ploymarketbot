@@ -302,6 +302,30 @@ def _print_turn(r: dict) -> None:
         if c.get("workaround"):
             print(f"    instead: {c['workaround']}")
         print(f"    (authorised by {c['charter']})")
+    ag = r.get("agent") or {}
+    if ag.get("available"):
+        _hr(f"WHAT THE AGENT DID  ({ag.get('model')})")
+        for s in ag.get("steps", []):
+            if s.get("kind") == "text":
+                continue
+            a = s.get("args") or {}
+            target = (a.get("path") or a.get("pattern") or a.get("subcommand")
+                      or a.get("target") or "")
+            print(f"  [{s.get('n'):>2}] {s.get('tool'):<14}{str(target)[:52]}"
+                  + ("" if s.get("ok") else "   FAILED"))
+            if not s.get("ok"):
+                print(f"       {str(s.get('result'))[:150]}")
+        for f in ag.get("files_changed", []):
+            print(f"  changed  {f}")
+        t = ag.get("tests") or {}
+        _kv("test suite", "PASSED" if t.get("passed")
+            else ("FAILED" if t.get("ran") else "not run by the model"))
+        _kv("rollback", ag.get("rollback"))
+        if ag.get("note"):
+            print(f"\n  {ag['note']}")
+    elif ag.get("note"):
+        print(f"\n  {ag['note']}")
+
     doc = r.get("document") or {}
     if doc:
         _hr("DOCUMENT")
@@ -445,6 +469,71 @@ def cmd_chat(args, st: Settings) -> int:
         _print_turn(con.ask(q, narrate=not args.no_narrate))
 
 
+def cmd_agent(args, st: Settings) -> int:
+    """§2/§6/§27. State an objective; the AI does the work on the project."""
+    from .agents.autonomy import Agent, status as agent_status
+    from .core.store import Store
+
+    ast = agent_status(st)
+    if not ast["available"]:
+        _hr("AUTONOMOUS ENGINEER — NOT CONFIGURED")
+        print(f"  {ast['note']}\n")
+        print("  Example, with Ollama running locally:")
+        print("    set PQV3_LLM_PROVIDER=ollama")
+        print("    set PQV3_LLM_ENDPOINT=http://127.0.0.1:11434/v1")
+        print("    set PQV3_LLM_MODEL=qwen2.5-coder:14b")
+        print("    set PQV3_LLM_CONTEXT=32768")
+        print("\n  The model must support tool calling. Most current instruct")
+        print("  models do; a base completion model cannot drive the loop.")
+        return 2
+
+    objective = " ".join(args.objective).strip()
+    if not objective:
+        print("  give it something to do, e.g.")
+        print('    pqv3 agent "the news panel is empty — find out why and '
+              'fix it"')
+        return 2
+
+    _hr("AUTONOMOUS ENGINEER")
+    _kv("model", ast["model"])
+    _kv("step budget", ast["max_steps"])
+    _kv("mode", "DRY RUN — no file is written" if args.dry_run else "LIVE")
+    _kv("objective", objective)
+    print()
+
+    def show(step) -> None:
+        if step.kind == "text":
+            return
+        head = f"  [{step.n:>2}] {step.tool}"
+        detail = (step.args.get("path") or step.args.get("pattern")
+                  or step.args.get("subcommand") or step.args.get("target")
+                  or "")
+        print(f"{head:<26}{str(detail)[:60]}"
+              + ("" if step.ok else "   FAILED"))
+        if not step.ok:
+            print(f"       {step.result[:160]}")
+
+    store = Store(st.ensure_dirs())
+    sess = Agent(st, store, max_steps=args.max_steps or 0,
+                 dry_run=args.dry_run, on_step=show).run(objective)
+
+    _hr("RESULT")
+    print(f"  {sess.answer or sess.reason}\n")
+    _kv("steps", len(sess.steps))
+    _kv("files changed", len(sess.files_changed))
+    for f in sess.files_changed:
+        print(f"       {f}")
+    if sess.tests.get("ran"):
+        _kv("test suite", "PASSED" if sess.tests["passed"] else "FAILED")
+    else:
+        _kv("test suite", "not run by the model")
+    _kv("elapsed", f"{sess.elapsed_ms / 1000:.1f}s")
+    _kv("rollback", sess.rollback)
+    if sess.note:
+        print(f"\n  {sess.note}")
+    return 0 if (sess.finished and sess.tests.get("passed", True)) else 1
+
+
 def cmd_ingest(args, st: Settings) -> int:
     """§29. Read a document, convert it into candidates, adopt nothing."""
     from .agents.console import Console
@@ -551,6 +640,40 @@ def cmd_depend(args, st: Settings) -> int:
     _kv("null mean best |r|", _fmt(ll.surrogate.get("null_mean"), 4))
     _kv("p", ll.surrogate.get("p_value"))
     print(f"\n  {ll.note}")
+    return 0
+
+
+def cmd_pairs(args, st: Settings) -> int:
+    """§13/§35. Cross-market structure, at the grain that can hold it."""
+    from .core.source import HistoricalSource
+    from .research import pairs as P
+
+    src = HistoricalSource(st)
+    if not src.available:
+        print("  no historical tape")
+        return 2
+    r = P.run(st, src, max_tokens=args.max_tokens, alpha=args.alpha)
+    mx = r["matrix"]
+    _hr("CROSS-MARKET PAIRS")
+    _kv("observations", mx["rows"])
+    _kv("pairs", mx["pairs"])
+    _kv("leader markets", mx["leaders"])
+    _kv("follower markets", mx["followers"])
+    if not r["findings"] and "under the" in r.get("note", ""):
+        print(f"\n  {r['note']}")
+        return 0
+    _kv("rules tested", r.get("tested"))
+    _kv("BH threshold", r.get("bh_threshold"))
+    _kv("baseline (excess)", _fmt(r.get("baseline"), 6))
+    _kv("survivors", r.get("survivors"))
+    if r["findings"]:
+        _hr("FINDINGS")
+        for f in r["findings"][:20]:
+            mark = "SURVIVES" if f["survives"] else "        "
+            print(f"  {mark} {f['statement'][:52]:<54}"
+                  f" n={f['n']:<6} exp={f['expectancy']:+.4f}"
+                  f" oos={f['oos_expectancy']:+.4f}")
+    print(f"\n  {r['note']}")
     return 0
 
 
@@ -794,6 +917,28 @@ def cmd_doctrine(args, st: Settings) -> int:
     _kv("context limit", f"{s['context_limit']:,} tokens")
     _kv("in force", s["in_force"].upper())
     print(f"\n  {s['note']}")
+
+    if args.compliance:
+        from .agents.compliance import audit
+        a = audit()
+        _hr("CHARTER COMPLIANCE — ALL 44 SECTIONS")
+        for row in a["sections"]:
+            sec = doc.section(row["section"])
+            title = sec.title if sec else ""
+            flag = "" if row["verified"] else "   << EVIDENCE MISSING"
+            print(f"\n  §{row['section']:<3}{row['status']:<12}{title}{flag}")
+            print(f"      {row['answer']}")
+            if row["gap"]:
+                print(f"      GAP: {row['gap']}")
+            if row["missing"]:
+                for m in row["missing"]:
+                    print(f"      MISSING: {m}")
+        _hr("SUMMARY")
+        for k, v in sorted(a["by_status"].items()):
+            _kv(k, v)
+        _kv("evidence verified", f"{a['verified']}/{a['total']} sections")
+        print(f"\n  {a['note']}")
+        return 0 if a["complete"] else 1
 
     if args.full:
         print("\n" + (doc.charter() or doc.CONDENSED))
@@ -1489,6 +1634,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-lag", type=int, default=20)
     s.add_argument("--draws", type=int, default=400)
 
+    s = add("pairs", cmd_pairs,
+            help="cross-market structure at pair grain, screened and "
+                 "validated out of sample")
+    s.add_argument("--max-tokens", type=int, default=60)
+    s.add_argument("--alpha", type=float, default=0.10)
+
     s = add("cycles", cmd_cycles,
             help="periodicity on the tape's own irregular sampling")
     s.add_argument("token")
@@ -1520,6 +1671,15 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--yes", action="store_true",
                    help="execute the rollback command, not just plan it")
 
+    # §2/§6/§30 — the AI that changes the project rather than describing it.
+    s = add("agent", cmd_agent,
+            help="tell the AI what to do; it edits the project and tests it")
+    s.add_argument("objective", nargs="*")
+    s.add_argument("--dry-run", action="store_true",
+                   help="show the diffs it would apply, write nothing")
+    s.add_argument("--max-steps", type=int, default=0,
+                   help="override the runaway guard (default 40)")
+
     s = add("ingest", cmd_ingest,
             help="read a research document and convert it into candidates")
     s.add_argument("path")
@@ -1532,6 +1692,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = add("doctrine", cmd_doctrine,
             help="the master system prompt in force, and its real boundary")
     s.add_argument("--full", action="store_true", help="print the whole text")
+    s.add_argument("--compliance", action="store_true",
+                   help="audit all 44 sections against the code that answers "
+                        "them, verifying every cited file exists")
     s.add_argument("--section", type=int, default=0,
                    help="print one numbered section")
 

@@ -204,9 +204,25 @@ class AgentConfig:
     llm_provider: str = os.environ.get("PQV3_LLM_PROVIDER", "")     # "" = off
     llm_endpoint: str = os.environ.get("PQV3_LLM_ENDPOINT", "")
     llm_model: str = os.environ.get("PQV3_LLM_MODEL", "")
-    llm_context_limit: int = 8192
+    llm_context_limit: int = int(
+        os.environ.get("PQV3_LLM_CONTEXT", "8192") or 8192)
     llm_temperature: float = 0.2
-    llm_timeout_secs: float = 60.0
+    llm_timeout_secs: float = float(
+        os.environ.get("PQV3_LLM_TIMEOUT", "600") or 600)
+
+    # The autonomous engineer (agents/autonomy.py). It edits this project.
+    #
+    # `agent_max_steps` is a runaway guard, not a capability limit: it stops a
+    # model stuck in a loop from rewriting the same file all night. Raise it
+    # freely. Running out of it is reported as an unfinished job, never as a
+    # finished one.
+    agent_max_steps: int = int(
+        os.environ.get("PQV3_AGENT_MAX_STEPS", "40") or 40)
+    # Whether the console routes an engineering instruction to the agent
+    # automatically. On by default when a model is configured, because §2 is
+    # explicit that the chat must not merely tell the user how to make a
+    # change. Set PQV3_AGENT_AUTO=0 to get the plan without the edits.
+    agent_auto: bool = os.environ.get("PQV3_AGENT_AUTO", "1") != "0"
 
 
 @dataclass

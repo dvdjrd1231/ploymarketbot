@@ -61,11 +61,43 @@ def test_status_never_exposes_length_or_prefix(monkeypatch):
 
 
 def test_no_module_exposes_a_key_getter():
-    """The signing boundary must have no legitimate 'give me the key' call."""
+    """The signing boundary must have no legitimate 'give me the key' call.
+
+    Signing is implemented now, so the invariant is no longer "it refuses
+    everything" — it is that the key never travels upward. There is no getter,
+    the resolver is private, and `sign` returns a signature rather than the
+    material that made it.
+    """
     assert not hasattr(secrets, "get_private_key")
     assert not hasattr(secrets.SigningBoundary, "private_key")
-    with pytest.raises(NotImplementedError):
+    assert not hasattr(secrets.SigningBoundary, "key")
+    # The only resolver is private, so every call site is greppable.
+    public = [n for n in dir(secrets.SigningBoundary) if not n.startswith("_")]
+    assert set(public) == {"available", "sign", "address"}, public
+
+
+def test_signing_refuses_a_payload_that_is_not_a_digest(monkeypatch):
+    """Signing raw bytes would skip the EIP-712 domain binding entirely."""
+    monkeypatch.delenv(secrets.ENV_PRIVATE_KEY, raising=False)
+    with pytest.raises(ValueError, match="32-byte digest"):
         secrets.SigningBoundary().sign(b"payload")
+
+
+def test_signing_refuses_when_no_wallet_is_configured(monkeypatch):
+    monkeypatch.delenv(secrets.ENV_PRIVATE_KEY, raising=False)
+    monkeypatch.setattr(secrets, "_keyring_get", lambda name: None)
+    with pytest.raises(NotImplementedError, match="no wallet credential"):
+        secrets.SigningBoundary().sign(b"\x00" * 32)
+
+
+def test_a_signature_does_not_contain_the_key(monkeypatch):
+    """The point of the boundary, asserted directly."""
+    monkeypatch.setenv(secrets.ENV_PRIVATE_KEY, PLANTED_KEY)
+    sig = secrets.SigningBoundary().sign(b"\x11" * 32)
+    assert len(sig) == 65
+    planted = bytes.fromhex(PLANTED_KEY.replace("0x", ""))
+    assert planted not in sig
+    assert PLANTED_KEY.replace("0x", "") not in sig.hex()
 
 
 def test_api_payloads_are_scrubbed(monkeypatch, st, store):

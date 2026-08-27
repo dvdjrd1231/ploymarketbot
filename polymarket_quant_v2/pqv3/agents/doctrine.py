@@ -387,44 +387,55 @@ def capabilities(st=None, store=None, engine=None) -> dict:
             no("store introspection", f"{type(e).__name__}: {e}", cite(25))
 
     # -- what does not exist, and is not going to be implied ---------------
-    no("source-file modification",
-       "the console cannot open, edit, create or delete a source file. §6 and "
-       "§30 authorise it; this installation does not implement it. Asking the "
-       "console to 'fix the file' produces a located, specific engineering "
-       "plan and the exact files involved — a human or an external coding "
-       "agent applies it", cite(6, 30),
-       "use the plan the console returns with your editor or coding agent")
-    no("PDF ingestion",
-       "every viable PDF text extractor is a third-party dependency, and this "
-       "project is standard-library only. Guessing at a PDF's text layer "
-       "produces plausible-looking garbage, which §41 makes worse than "
-       "refusing. Every other document format IS read — see `can` above",
-       cite(5, 41),
-       "export the PDF to .docx, .txt or .md and re-run")
+    # §6 is CONDITIONAL, never absent. The agent is built and wired; whether it
+    # can run depends only on whether a model is configured to drive it.
+    _cfg = getattr(st, "agents", None) if st is not None else None
+    if _cfg and _cfg.llm_provider and _cfg.llm_endpoint and _cfg.llm_model:
+        yes("source-file modification",
+            "the agent reads, searches, writes, creates and deletes any file "
+            "in the project, runs the test suite and iterates on its own "
+            "failures. A git checkpoint is taken before its first write and "
+            "every session reports a rollback command", cite(6, 30, 27))
+        yes("autonomous engineering from chat",
+            "an instruction typed into CHAT is executed, not described. §2: "
+            "the console does not merely tell you how to make the change",
+            cite(2, 39))
+    else:
+        no("source-file modification",
+           "the agent that does this is built and wired — it has no model to "
+           "drive it. Set PQV3_LLM_PROVIDER, PQV3_LLM_ENDPOINT and "
+           "PQV3_LLM_MODEL to any OpenAI-compatible endpoint (Ollama and LM "
+           "Studio both work on this machine) and it becomes available with "
+           "no other change", cite(6, 30),
+           "set the three PQV3_LLM_* variables, then ask the console to make "
+           "the change")
+    yes("reading documents of every supported kind",
+        "TXT, MD, CSV, TSV, JSON, DOCX, XLSX and PDF are decoded from their "
+        "bytes; screenshots and scans are transcribed by a vision model and "
+        "carry a TRANSCRIBED label on every claim, because a generated "
+        "character and a decoded one are different evidence. Encrypted and "
+        "unmapped-font PDFs are refused by name rather than returned as "
+        "mojibake", cite(5, 41))
     no("live order placement from chat",
        "no execution path is reachable from the console in any mode. LIVE "
        "remains a human action recorded in `authorizations`", cite(32, 31),
        "pqv3 authorize-live --yes, deliberately, from a terminal")
-    no("cross-market strategies",
-       "lead-lag and mutual information between two markets are measurable "
-       "and `pqv3 depend` measures them — but the observation matrix is one "
-       "row per wallet-trade, so a market-PAIR has no row and no such "
-       "hypothesis can enter the discovery pass. This is a matrix rebuild, "
-       "not a missing function", cite(13, 11),
-       "read the result as analysis; it cannot become a validated strategy "
-       "without a different matrix grain")
-    no("separating a switching regime from a smooth latent process",
-       "`pqv3 states` establishes that hidden-state structure exists and that "
-       "it beats plain observable memory. It does NOT reliably say whether "
-       "the states switch or drift: the discriminator built for it scored "
-       "1.75-3.07 on AR(1) and 2.62-7.23 on genuine switching, overlapping "
-       "and inverting, so it is reported as a diagnostic and gates nothing",
-       cite(11, 18),
-       "read `persistence.persistence_ratio` directly and treat it as a lean")
-    no("autonomous self-modification",
-       "§23 asks the system to improve the machinery that produces "
-       "improvements. It reports where that machinery is weak; it does not "
-       "rewrite itself", cite(23, 21))
+    yes("cross-market strategy discovery",
+        "a second observation matrix at (leader, follower, instant) grain, "
+        "demeaned within market and price band, rules restricted to "
+        "leader-conditioned features, split by leader market and judged "
+        "against the same BH threshold. `pqv3 pairs`", cite(13, 35))
+    yes("separating a switching regime from a drifting process",
+        "a Gaussian HMM, an AR(1) and an i.i.d. mixture are all fitted to the "
+        "continuous series and compared by BIC. Measured 15/15 correct over "
+        "three processes and five seeds, with margins in the hundreds of "
+        "points", cite(11, 19))
+    no("UNATTENDED self-modification",
+       "§23's improve-the-machinery loop runs when a human asks for it, not on "
+       "a schedule of its own. The agent will rewrite any part of this project "
+       "including its own modules — it will not start a session unprompted",
+       cite(23, 21),
+       'ask for it: pqv3 agent "find your weakest research step and fix it"')
 
     return {"can": can, "cannot": cannot,
             "n_can": len(can), "n_cannot": len(cannot),

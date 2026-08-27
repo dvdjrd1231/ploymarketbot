@@ -77,7 +77,9 @@ class Surfacer:
         for fn in (self._collectors, self._drawdown, self._crash,
                    self._gates_costing_money, self._degraded_strategies,
                    self._new_validated, self._data_staleness,
-                   self._retire_signals, self._settlement_unlocked):
+                   self._retire_signals, self._settlement_unlocked,
+                   self._liquidity_withdrawal, self._spread_dislocation,
+                   self._stale_probability, self._volume_shock):
             try:
                 out.extend(fn() or [])
             except Exception as e:                            # noqa: BLE001
@@ -248,6 +250,145 @@ class Surfacer:
             why="four search axes that were inert become live, which changes "
                 "the denominator. The next pass is not comparable to the last",
             action="pqv3 discover --rebuild")]
+
+    # ------------------------------------------------- §20 market anomalies
+    #
+    # These four read `book_snapshots`, which is empty on a fresh install and
+    # cannot be backfilled. They are written anyway, and each returns nothing
+    # rather than raising when the history is thin, so the capability exists
+    # the moment collection has run long enough rather than being a thing
+    # somebody has to remember to add later. `_microstructure_ready` reports
+    # which of the two it is, and the audit reads that instead of guessing.
+
+    MIN_SNAPSHOTS = 200
+
+    def _microstructure_ready(self) -> tuple[bool, str]:
+        n = self.store.count("book_snapshots")
+        span = self.store.history_span_days("book_snapshots")
+        if n < self.MIN_SNAPSHOTS:
+            return False, (f"{n} order-book snapshots, under the "
+                           f"{self.MIN_SNAPSHOTS} needed for a baseline. "
+                           f"Depth history accumulates only while collectors "
+                           f"run and cannot be backfilled")
+        return True, f"{n} snapshots over {span:.1f} d"
+
+    def _book_baseline(self, col: str) -> list:
+        """Per-token recent-vs-prior comparison on one book column."""
+        return self.store.query(
+            f"SELECT token_id,"
+            f"       AVG(CASE WHEN capture_ts >= ? THEN {col} END) recent,"
+            f"       AVG(CASE WHEN capture_ts <  ? THEN {col} END) prior,"
+            f"       COUNT(*) n"
+            f"  FROM book_snapshots GROUP BY token_id HAVING n >= 40",
+            (int(time.time()) - 3600, int(time.time()) - 3600))
+
+    def _liquidity_withdrawal(self) -> list:
+        ok, _ = self._microstructure_ready()
+        if not ok:
+            return []
+        out = []
+        for r in self._book_baseline("(bid_depth + ask_depth)"):
+            recent, prior = r["recent"], r["prior"]
+            if not recent or not prior or prior <= 0:
+                continue
+            drop = 1.0 - (recent / prior)
+            if drop < 0.5:
+                continue
+            out.append(Discovery(
+                key=f"liquidity_withdrawal:{r['token_id']}", kind="MARKET",
+                headline="depth has been withdrawn from a market",
+                measured=f"{r['token_id'][:20]}: mean depth {prior:.1f} -> "
+                         f"{recent:.1f} ({drop:.0%} gone)",
+                importance=0.8, impact=0.7, urgency=0.8,
+                why="§20: liquidity leaving ahead of a move is either "
+                    "information arriving or a maker stepping away. Either "
+                    "way the execution model's fill assumption no longer "
+                    "holds, so a size that was feasible an hour ago may not be"))
+        return out
+
+    def _spread_dislocation(self) -> list:
+        ok, _ = self._microstructure_ready()
+        if not ok:
+            return []
+        out = []
+        for r in self._book_baseline("spread"):
+            recent, prior = r["recent"], r["prior"]
+            if not recent or not prior or prior <= 0:
+                continue
+            if recent < prior * 3.0:
+                continue
+            out.append(Discovery(
+                key=f"spread_blowout:{r['token_id']}", kind="MARKET",
+                headline="spread has widened sharply",
+                measured=f"{r['token_id'][:20]}: {prior:.4f} -> {recent:.4f}",
+                importance=0.7, impact=0.8, urgency=0.7,
+                why="a spread that triples is the cost of crossing tripling. "
+                    "An edge measured against the old spread may not survive "
+                    "the new one"))
+        return out
+
+    def _stale_probability(self) -> list:
+        """A book that has not moved while others have. §20's stale price."""
+        ok, _ = self._microstructure_ready()
+        if not ok:
+            return []
+        rows = self.store.query(
+            "SELECT token_id, COUNT(DISTINCT mid) distinct_mid, COUNT(*) n,"
+            "       MAX(capture_ts) last_ts FROM book_snapshots"
+            " WHERE capture_ts >= ? GROUP BY token_id HAVING n >= 60",
+            (int(time.time()) - 6 * 3600,))
+        out = []
+        for r in rows:
+            if r["distinct_mid"] > 1:
+                continue
+            out.append(Discovery(
+                key=f"stale_price:{r['token_id']}", kind="MARKET",
+                headline="a quoted mid has not moved at all",
+                measured=f"{r['token_id'][:20]}: one distinct mid across "
+                         f"{r['n']} snapshots in six hours",
+                importance=0.6, impact=0.6, urgency=0.5,
+                why="§20: a price that never moves is either a market nobody "
+                    "is pricing or a feed that has frozen. Both matter and "
+                    "they are not the same problem — check collector health "
+                    "before reading it as an opportunity"))
+        return out
+
+    def _volume_shock(self) -> list:
+        """Unusual trade flow, from decisions rather than from the book.
+
+        This one needs no order-book history, so it works on a fresh install:
+        the scanner records how many markets it saw, and a step change in that
+        is worth knowing about whether or not depth is being captured.
+        """
+        rows = self.store.query(
+            "SELECT market_id, COUNT(*) n FROM decisions"
+            " WHERE ts >= ? GROUP BY market_id ORDER BY n DESC LIMIT 5",
+            (int(time.time()) - 3600,))
+        if not rows or rows[0]["n"] < 20:
+            return []
+        return [Discovery(
+            key=f"decision_burst:{rows[0]['market_id']}", kind="MARKET",
+            headline="one market is absorbing most of the decision traffic",
+            measured=f"{rows[0]['market_id'][:24]}: {rows[0]['n']} decisions "
+                     f"in an hour",
+            importance=0.5, impact=0.5, urgency=0.4,
+            why="repeated evaluation of one market usually means it keeps "
+                "reaching the gates and keeps failing at the same one. Worth "
+                "reading the blocking gate rather than the count")]
+
+    def microstructure_status(self) -> dict:
+        """What the §20 market detectors can currently see."""
+        ready, detail = self._microstructure_ready()
+        return {"ready": ready, "detail": detail,
+                "detectors": ["liquidity_withdrawal", "spread_dislocation",
+                              "stale_probability", "volume_shock"],
+                "note": ("all four are implemented. The three that read "
+                         "order-book depth stay silent until enough history "
+                         "exists, because depth cannot be backfilled — that "
+                         "is a data limit, not a missing capability"
+                         if not ready else
+                         "order-book history is sufficient; all four are "
+                         "active")}
 
     # ------------------------------------------------------------ persistence
     def _already_said(self, d: Discovery) -> bool:

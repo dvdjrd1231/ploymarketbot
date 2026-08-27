@@ -31,6 +31,78 @@ def test_charter_loads_and_is_complete():
     assert doctrine.section(41).title == "NEVER FABRICATE"
 
 
+def test_every_charter_section_is_accounted_for():
+    """No section may be silently skipped in the compliance audit."""
+    from pqv3.agents.compliance import covered
+    assert covered() == {s.number for s in doctrine.sections()}
+    assert len(covered()) == 44
+
+
+def test_the_compliance_audit_verifies_its_own_evidence():
+    """A status table nobody checks is a status table that goes stale.
+
+    Every file, command and test the audit cites must exist. This is what
+    stops §17 reporting DONE after someone deletes montecarlo.py.
+    """
+    from pqv3.agents.compliance import audit
+    a = audit()
+    assert a["total"] == 44
+    assert a["complete"], a["unverified"]
+    assert a["verified"] == 44
+    assert a["by_status"].get("DONE", 0) >= 30
+    assert (a["by_status"].get("DONE", 0)
+            + a["by_status"].get("CONDITIONAL", 0)
+            + a["by_status"].get("PARTIAL", 0)
+            + a["by_status"].get("REFUSED", 0)) == 44
+    for row in a["sections"]:
+        if row["status"] in ("PARTIAL", "CONDITIONAL", "REFUSED"):
+            assert row["gap"], f"§{row['section']} must name what is missing"
+
+
+def test_a_deleted_module_breaks_its_section(tmp_path):
+    """The audit must fail when the code it cites is gone."""
+    from pqv3.agents.compliance import audit
+    a = audit(root=tmp_path)          # an empty tree: nothing exists
+    assert not a["complete"]
+    assert len(a["unverified"]) == 44
+
+
+def test_live_execution_names_exactly_what_is_outstanding():
+    """§32's gap must distinguish what is written from what is not.
+
+    The signing path is built and verified against published vectors; order
+    PLACEMENT is not. Collapsing those two into one status — in either
+    direction — is the thing this row exists to prevent.
+    """
+    from pqv3.agents.compliance import audit
+    row = [r for r in audit()["sections"] if r["section"] == 32][0]
+    assert row["status"] == "PARTIAL"
+    assert "NOT BUILT" in row["gap"]
+    assert "venue profile" in row["gap"], "the missing constants are named"
+    assert "never placed an order" in row["gap"].replace("has ever", "never"), (
+        "the audit must not imply venue testing that never happened")
+    assert "venue-tested" in row["gap"]
+
+
+def test_the_signing_path_reports_what_it_cannot_do():
+    from pqv3.execution.signer import status
+    s = status()
+    assert s["can_sign_arbitrary_typed_data"] is True
+    assert s["can_place_an_order"] is False
+    assert s["venue_profile"]["complete"] is False, (
+        "no venue profile ships — the constants must be copied from the venue")
+
+
+def test_signing_an_order_without_a_profile_refuses_with_the_reason():
+    from pqv3.execution.signer import VenueProfile, sign_order
+    import pytest as _pytest
+    with _pytest.raises(NotImplementedError) as e:
+        sign_order(1, {"salt": 1}, VenueProfile())
+    assert "venue profile is incomplete" in str(e.value)
+    assert "wrong ORDER" in str(e.value), (
+        "the dangerous failure mode must be spelled out, not just the safe one")
+
+
 def test_condensed_is_sent_when_the_full_text_will_not_fit():
     """A charter that crowds out the evidence has defeated its own purpose."""
     prompt, which = doctrine.system_prompt(context_limit=8192)
@@ -52,17 +124,43 @@ def test_role_limits_are_attached_to_the_prompt():
 
 
 def test_capabilities_publish_what_is_missing(st, store):
+    """With no model configured, the agent has nothing to drive it."""
+    assert not st.agents.llm_provider
     caps = doctrine.capabilities(st, store)
     named = {c["capability"] for c in caps["cannot"]}
-    # These four are authorised by the charter and NOT implemented here. If one
-    # ever ships, this test should be edited deliberately — never deleted to
-    # make the list look better.
     assert "source-file modification" in named
-    assert "PDF ingestion" in named
     assert "live order placement from chat" in named
-    assert "autonomous self-modification" in named
+    # Every document format is read now — PDFs are decoded, images are
+    # transcribed by a vision model. Neither is a blanket refusal any more.
+    assert "PDF ingestion" not in named
+    assert "reading scans and screenshots" not in named
     for c in caps["cannot"]:
         assert c["charter"], "a limit must cite the clause it fails to meet"
+    # The reason must point at the missing model, not at a missing feature.
+    src = [c for c in caps["cannot"]
+           if c["capability"] == "source-file modification"][0]
+    assert "no model to drive it" in src["detail"]
+
+
+def test_source_modification_becomes_available_with_a_model(st, store):
+    """The boundary is conditional, and it flips on configuration alone.
+
+    This is the test that would have caught the original defect: the system
+    once reported source modification as permanently impossible, when the only
+    thing actually missing was an endpoint to point at.
+    """
+    st.agents.llm_provider = "ollama"
+    st.agents.llm_endpoint = "http://127.0.0.1:11434/v1"
+    st.agents.llm_model = "qwen2.5-coder:14b"
+    caps = doctrine.capabilities(st, store)
+    can = {c["capability"] for c in caps["can"]}
+    cannot = {c["capability"] for c in caps["cannot"]}
+    assert "source-file modification" in can
+    assert "autonomous engineering from chat" in can
+    assert "source-file modification" not in cannot
+    # §32 does not move, whatever is configured.
+    assert "live order placement from chat" in cannot
+    assert "UNATTENDED self-modification" in cannot
 
 
 # ---------------------------------------------------------------- the console

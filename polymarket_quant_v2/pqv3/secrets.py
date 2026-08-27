@@ -152,9 +152,35 @@ class SigningBoundary:
     def available(self) -> bool:
         return wallet_configured()
 
+    def _key(self) -> int:
+        """Read the key, use it, never return it upward.
+
+        Private and named so that the one place it is resolved is greppable.
+        Nothing outside this class calls it, and nothing returns its value to a
+        caller — the whole reason this class exists.
+        """
+        raw, _src = _resolve(ENV_PRIVATE_KEY)
+        if not raw:
+            raise NotImplementedError(
+                f"no wallet credential is present. Set {ENV_PRIVATE_KEY} in "
+                f"the environment or the OS keyring. It is never read into "
+                f"the config tree and never written to a log, a report or a "
+                f"prompt.")
+        return int(raw.strip().replace("0x", ""), 16)
+
     def sign(self, payload: bytes) -> bytes:
-        raise NotImplementedError(
-            "Order signing is not wired up. This is deliberate: V3 has never "
-            "been authorised for live trading, and an unused signing path is a "
-            "liability. Implement here — inside the boundary — when a human "
-            "authorises LIVE mode.")
+        """Sign a 32-byte digest. Returns 65 bytes: r || s || v."""
+        from .execution.crypto import sign as _sign, signature_bytes
+        if len(payload) != 32:
+            raise ValueError(
+                "sign() takes a 32-byte digest, not a message. Hash the "
+                "structure with execution.eip712.digest first — signing raw "
+                "bytes would skip the domain binding that stops a signature "
+                "being replayed against another chain or contract.")
+        r, s, v = _sign(self._key(), payload)
+        return signature_bytes(r, s, v)
+
+    def address(self) -> str:
+        """The address this boundary signs for. Derived, never stored."""
+        from .execution.crypto import address_from_private
+        return address_from_private(self._key())

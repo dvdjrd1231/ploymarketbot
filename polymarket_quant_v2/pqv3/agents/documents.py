@@ -14,12 +14,13 @@ same walk-forward and the same robustness battery as a mechanically generated
 hypothesis. A document confers no privilege. Somebody's PDF asserting an edge
 is, to this system, exactly one more untested string.
 
-READING. Stdlib only, because the whole project is. That buys TXT, MD, CSV,
-TSV, JSON, LOG, source files, and — via `zipfile` plus `xml.etree`, since both
-are zip containers of XML — DOCX and XLSX. It does not buy PDF: every viable
-parser is a dependency this project refuses to take, and guessing at a PDF's
-text layer produces plausible-looking garbage, which is worse than refusing.
-PDFs are declined by name with the reason attached.
+READING. Stdlib only, because the whole project is. TXT, MD, CSV, TSV, JSON,
+LOG and source files directly; DOCX and XLSX via `zipfile` plus `xml.etree`,
+since both are zip containers of XML; PDF via `zlib` and a content-stream
+tokeniser in `pdf.py`. Images are the one format that is not DECODED but
+TRANSCRIBED, by a vision model through `vision.py` — and everything produced
+that way is flagged `transcribed`, because a generated character and a decoded
+one are different kinds of evidence and §41 does not let them be confused.
 
 THE HARD PART is not reading the file. It is that "smart money moves early"
 and `w_secs_since_prev <= 900` are the same claim in two languages, and only
@@ -40,6 +41,8 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .vision import IMAGE_SUFFIXES as _VISION_SUFFIXES
+
 MAX_BYTES = 8 * 1024 * 1024        # a research note, not a corpus
 MAX_CHARS = 400_000
 
@@ -48,10 +51,6 @@ TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".rst", ".log", ".json", ".csv",
                  ".html", ".xml"}
 
 REFUSED = {
-    ".pdf": ("PDF text extraction needs a third-party parser, and this project "
-             "is standard-library only. Guessing at a PDF's text layer yields "
-             "plausible-looking garbage, which §41 makes worse than refusing. "
-             "Export it to .docx, .txt or .md and re-run"),
     ".doc": ("legacy .doc is a binary OLE format with no stdlib reader. Save "
              "as .docx"),
     ".xls": ("legacy .xls is a binary format with no stdlib reader. Save as "
@@ -185,6 +184,7 @@ class Claim:
     testable: bool = False
     blocked_by: list = field(default_factory=list)
     quantified: bool = False
+    evidence: str = "DECODED"        # DECODED from bytes, or TRANSCRIBED by a model
     caveat: str = ""
 
     def to_dict(self) -> dict:
@@ -195,6 +195,7 @@ class Claim:
 class Document:
     path: str
     kind: str = ""
+    transcribed: bool = False        # produced by a model reading an image
     ok: bool = False
     error: str = ""
     chars: int = 0
@@ -276,8 +277,13 @@ def _xlsx_rows(path: Path) -> list:
     return rows
 
 
-def read(path_str: str) -> Document:
-    """Read a document, or say precisely why it could not be read."""
+def read(path_str: str, st=None) -> Document:
+    """Read a document, or say precisely why it could not be read.
+
+    `st` is only needed for images: a screenshot is transcribed by a
+    vision-capable model rather than decoded, so it needs the model settings.
+    Every other format is read from the bytes and ignores it.
+    """
     p = Path(path_str).expanduser()
     d = Document(path=str(p), kind=p.suffix.lower() or "(no suffix)")
 
@@ -299,7 +305,33 @@ def read(path_str: str) -> Document:
         return d
 
     try:
-        if suf == ".docx":
+        if suf in _VISION_SUFFIXES:
+            from .vision import transcribe
+            if st is None:
+                d.error = ("reading an image needs the model settings; call "
+                           "documents.read(path, st) or use `pqv3 ingest`")
+                return d
+            t = transcribe(st, str(p))
+            if not t.ok:
+                d.error = t.reason
+                return d
+            d.text = t.text
+            d.transcribed = True
+            d.note = f"transcribed from an image by {t.model}"
+            for w in t.warnings:
+                d.note += f" — {w}"
+        elif suf == ".pdf":
+            from .pdf import extract as _pdf
+            res = _pdf(p.read_bytes())
+            if not res.ok:
+                d.error = res.reason
+                return d
+            d.text = res.text
+            d.note = (f"extracted from {res.streams_decoded} content "
+                      f"stream(s), legibility {res.legibility:.0%}")
+            for w in res.warnings:
+                d.note += f" — {w}"
+        elif suf == ".docx":
             d.text = _docx_text(p)
         elif suf == ".xlsx":
             d.tables = _xlsx_rows(p)
@@ -385,6 +417,7 @@ def extract(d: Document, *, max_claims: int = 60) -> Document:
                   blocked_by=blocked, direction=_direction_of(s),
                   quantified=bool(_NUMERIC.search(s)))
         c.testable = bool(features) and kind in ("CLAIM", "ASSUMPTION")
+        c.evidence = "TRANSCRIBED" if d.transcribed else "DECODED"
         if c.testable and blocked:
             # The dangerous case: "order-book imbalance predicts price
             # movement" maps onto price columns through the word "price" while
@@ -461,11 +494,17 @@ def extract(d: Document, *, max_claims: int = 60) -> Document:
             "nothing in this document maps onto the engine's vocabulary. That "
             "is a legitimate outcome (§33) — it may be a good document about "
             "something this system does not observe.")
-    d.note = (f"{len(d.claims)} classified statement(s): "
-              + ", ".join(f"{k.lower()} {v}" for k, v in sorted(kinds.items()))
-              + f". {testable} map to testable columns.")
+    # The read-time note is PREPENDED, not replaced. It carries the
+    # transcription warning for an image, and overwriting it here silently
+    # stripped the one label that distinguishes generated characters from
+    # decoded ones — which is the entire point of tracking it.
+    summary = (f"{len(d.claims)} classified statement(s): "
+               + ", ".join(f"{k.lower()} {v}"
+                           for k, v in sorted(kinds.items()))
+               + f". {testable} map to testable columns.")
+    d.note = f"{d.note} {summary}".strip() if d.note else summary
     return d
 
 
-def ingest(path: str) -> Document:
-    return extract(read(path))
+def ingest(path: str, st=None) -> Document:
+    return extract(read(path, st))

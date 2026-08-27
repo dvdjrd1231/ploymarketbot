@@ -158,6 +158,14 @@ echo     docs\ENGINE-LIMITS.md        what this data CANNOT answer
 echo     docs\ENGINE-ARCHITECTURE.md  how it is put together
 echo     docs\ENGINE-PERFORMANCE.md   what was actually slow, and why no Rust
 echo.
+echo   ASK IT ANYTHING
+echo     Double-click 6-ASK-THE-AI.bat, or open the dashboard's CHAT page.
+echo     Type an ordinary question - "audit the entire system", "why is
+echo     the news panel empty", "what should I do next". Answers come from
+echo     YOUR data and need no internet and no AI account.
+echo     Connect a local model (see MODEL SETUP inside 6-ASK-THE-AI.bat)
+echo     and it can change this program for you as well.
+echo.
 echo   Live trading is DISABLED. To review the requirements:
 echo     python -m pqv3 authorize-live
 echo   Nothing is authorised until you add --yes.

@@ -1866,14 +1866,24 @@ every reply.
 Six gaps, each for a different reason, and the reasons are not
 interchangeable:
 
-**Source-file modification (§6, §23, §30).** Not implemented. §6 presumes what
-this charter was written for — a tool-using frontier model with filesystem
-access. The intelligence *inside this build* is an optional local narrator that
-is off by default and structurally barred from producing a number. A
-code-modification path whose operator is absent in the default install is a
-menu item that never works, which is the fabricated capability §41 names. The
-console instead does the part of §27 that needs no write tool: locate the
-files, size them, plan the change, name the test.
+**Source-file modification (§6, §30). IMPLEMENTED — conditional on a model.**
+`pqv3/agents/tools.py` gives the intelligence real access to the project: read,
+search, write, create, delete, run the test suite, run any `pqv3` command, and
+`pqv3/agents/autonomy.py` drives it in a loop until the objective is met. An
+engineering instruction typed into CHAT is executed, not described.
+
+The one requirement is a tool-capable model at `PQV3_LLM_*`. With none
+configured the loop has nothing to drive it and says so; that is a missing
+engine, not a missing feature, and `doctrine.capabilities()` moves this entry
+from `cannot` to `can` the moment the three variables are set.
+
+This entry was previously — and wrongly — listed as *not implemented*, on the
+reasoning that V3 forbids a language model from emitting a probability, a size,
+a threshold or a verdict. That rule is right and it still holds for every
+narrative role. But it is a rule about a GENERATED NUMBER REACHING A TRADING
+DECISION, where it would be indistinguishable from a measurement. It says
+nothing about whether the AI may open a file and change it, and generalising it
+into "the model may not act" contradicted §3 outright.
 
 **PDF ingestion (§5).** Every viable extractor is a third-party dependency and
 this project is standard-library only; guessing at a text layer produces

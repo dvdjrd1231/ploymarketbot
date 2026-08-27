@@ -831,6 +831,44 @@ function turnHtml(t){
     : `<div class="limit"><b>could not read ${esc(t.document.path)}</b> &mdash;
         ${esc(t.document.error)}</div>`) : '';
 
+  // §6. What the agent actually did, including the diffs and the way back.
+  const ag = t.agent && t.agent.available ? (() => {
+    const s = t.agent;
+    const cards = [
+      card('Steps', int((s.steps||[]).length), esc(s.model||'')),
+      card('Files changed', int((s.files_changed||[]).length),
+           s.checkpoint_id ? 'checkpoint '+esc(s.checkpoint_id) : 'no checkpoint'),
+      card('Tests', s.tests && s.tests.ran
+            ? (s.tests.passed ? '<span class="pos">PASSED</span>'
+                              : '<span class="neg">FAILED</span>')
+            : nul,
+           s.tests && s.tests.ran ? '' : 'not run by the model'),
+      card('Finished', s.finished ? '<span class="pos">yes</span>'
+                                  : '<span class="amb">no</span>',
+           esc(s.reason||'')),
+    ].join('');
+    const steps = table([
+      {t:'#',cls:'num',k:'n'},
+      {t:'Tool',f:r=>r.kind==='text'?'<span class="mut">reply</span>'
+                                    :`<code>${esc(r.tool)}</code>`},
+      {t:'Target',cls:'wrap',f:r=>esc(r.args?(r.args.path||r.args.pattern||
+          r.args.subcommand||r.args.target||''):'')},
+      {t:'OK',f:r=>r.kind==='text'?'':tagOf(r.ok)},
+      {t:'ms',cls:'num',f:r=>int(r.elapsed_ms)},
+      {t:'Result',cls:'wrap',f:r=>esc(trunc(r.result||r.text,90))},
+    ], s.steps);
+    const files = (s.files_changed||[]).length
+      ? `<div class="cite">changed: ${(s.files_changed||[]).map(f=>
+          `<code>${esc(f)}</code>`).join(' ')}</div>` : '';
+    const back = `<div class="limit"><b>rollback</b> —
+        <code>${esc(s.rollback||'')}</code></div>`;
+    return box('what the agent did', `<div class="cards">${cards}</div>`
+      + files + back
+      + `<details open><summary>steps (${(s.steps||[]).length})</summary>
+         ${steps}</details>`
+      + (s.note?note(s.note):''));
+  })() : (t.agent && t.agent.note ? note(t.agent.note) : '');
+
   const cannot = (t.cannot||[]).map(c=>
     `<div class="limit"><b>cannot: ${esc(c.capability)}</b> — ${esc(c.detail)}
      ${c.workaround?`<br><span class="mut">instead: ${esc(c.workaround)}</span>`:''}
@@ -853,8 +891,8 @@ function turnHtml(t){
   const cite = (t.charter||[]).length
     ? `<div class="cite">charter: ${(t.charter||[]).map(esc).join(' · ')}</div>` : '';
 
-  return `<div class="turn">${head}${surf}${finding}${cannot}${doc}${diag}
-    ${steps}${chain}${actions}${ran}${ev}${llm}${cite}</div>`;
+  return `<div class="turn">${head}${surf}${finding}${cannot}${ag}${doc}
+    ${diag}${steps}${chain}${actions}${ran}${ev}${llm}${cite}</div>`;
 }
 
 VIEWS.DOCTRINE = d => {

@@ -45,6 +45,19 @@ NUMERIC_FORBIDDEN_ROLES = ("verdict", "probability", "sizing", "threshold")
 _NUM = re.compile(r"\b\d+(?:\.\d+)?%?\b")
 
 
+def _scrub_message(m: dict) -> dict:
+    """Scrub the text of one chat message, leaving its structure alone.
+
+    Only `content` carries free text. `tool_calls` and `tool_call_id` are
+    protocol fields, and redacting a call id would break the model's ability
+    to match a result to the call that asked for it.
+    """
+    out = dict(m)
+    if isinstance(out.get("content"), str):
+        out["content"] = scrub(out["content"])
+    return out
+
+
 @dataclass
 class LLMResult:
     available: bool = False
@@ -152,6 +165,83 @@ class LocalLLM:
         else:
             r.text = scrub(text)
         return r
+
+    # -- tool-calling transport ---------------------------------------------
+    def chat(self, messages: list, *, tools: list | None = None,
+             max_tokens: int = 4096, temperature: float | None = None) -> dict:
+        """One multi-turn completion, with optional tool calling.
+
+        Raw and unscrubbed of numerals on purpose. `ask()` above is the
+        narrator: it may not emit a figure, because its output is read as
+        commentary on measured evidence and a generated number there would be
+        indistinguishable from a measurement. This is a different job. The
+        agent loop calls this to plan and to write code, where a numeral is a
+        line number, an array index or a threshold in a source file — and
+        stripping those would produce broken software rather than safe
+        software.
+
+        The wire format is OpenAI-compatible function calling, which Ollama,
+        LM Studio, llama.cpp, vLLM and the OpenAI API all speak, so the same
+        code drives a 7B model on the user's own machine or a frontier model
+        behind an endpoint. Prompts are still passed through `secrets.scrub`.
+
+        Returns the raw `message` dict: `content`, and `tool_calls` when the
+        model asked for one.
+        """
+        import time
+        if not self.configured:
+            return {"error": "no model configured", "content": ""}
+
+        payload = {
+            "model": self.cfg.llm_model,
+            "messages": [_scrub_message(m) for m in messages],
+            "temperature": (self.cfg.llm_temperature if temperature is None
+                            else temperature),
+            "max_tokens": max_tokens, "stream": False,
+        }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        url = self.cfg.llm_endpoint.rstrip("/")
+        if not url.endswith("/chat/completions"):
+            url += "/v1/chat/completions" if "/v1" not in url \
+                else "/chat/completions"
+        headers = {"Content-Type": "application/json",
+                   "User-Agent": "polymarket-quant-bridge-v3/1.0"}
+        # An API key is read from the environment and never from the config
+        # tree, for the same reason no other credential lives there.
+        import os
+        key = os.environ.get("PQV3_LLM_API_KEY", "").strip()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode(), headers=headers)
+        t0 = time.perf_counter()
+        try:
+            with urllib.request.urlopen(
+                    req, timeout=self.cfg.llm_timeout_secs) as resp:
+                data = json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "replace")[:600]
+            except Exception:                                 # noqa: BLE001
+                pass
+            hint = ""
+            if tools and ("tool" in body.lower() or e.code == 400):
+                hint = (" — this endpoint may not support tool calling. A "
+                        "model without it cannot drive the agent; try a "
+                        "tool-capable model (most recent instruct models are)")
+            return {"error": f"HTTP {e.code}: {body}{hint}", "content": ""}
+        except Exception as e:                                # noqa: BLE001
+            return {"error": f"{type(e).__name__}: {e}", "content": ""}
+
+        msg = (data.get("choices") or [{}])[0].get("message", {}) or {}
+        msg["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
+        msg.setdefault("content", "")
+        return msg
 
     # -- the three things it is actually for --------------------------------
     def explain_decision(self, decision) -> LLMResult:

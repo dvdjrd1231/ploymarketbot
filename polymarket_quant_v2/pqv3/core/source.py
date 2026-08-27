@@ -201,6 +201,26 @@ class HistoricalSource:
         return [(int(r[0]), float(r[1]), float(r[2] or 0.0), r[3] or "")
                 for r in rows]
 
+    def active_tokens(self, *, min_prints: int = 40, min_distinct: int = 8,
+                      limit: int = 60) -> list[tuple[str, int, int, int]]:
+        """(token_id, prints, first_ts, last_ts) for tokens worth analysing.
+
+        `min_distinct` filters out tokens that traded thousands of times at a
+        single price — this database has several, and they carry no variance
+        for any estimator to work with. Ordered by activity so a caller taking
+        the first N gets the most informative N.
+        """
+        c = self._conn()
+        rows = c.execute(
+            "SELECT token_id, COUNT(*) n, MIN(ts) t0, MAX(ts) t1 "
+            "  FROM wallet_trades "
+            " WHERE event_type=? AND token_id != '' AND price>0 AND price<1 "
+            " GROUP BY token_id "
+            "HAVING n >= ? AND COUNT(DISTINCT price) >= ? "
+            " ORDER BY n DESC LIMIT ?",
+            (DECISION_EVENT, min_prints, min_distinct, limit)).fetchall()
+        return [(r[0], int(r[1]), int(r[2]), int(r[3])) for r in rows]
+
     def last_price(self, token_id: str, as_of: int) -> tuple[int, float] | None:
         c = self._conn()
         r = c.execute(
